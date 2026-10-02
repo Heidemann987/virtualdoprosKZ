@@ -1,17 +1,14 @@
 {
   "name": "doprosbot-kz",
   "version": "1.0.0",
-  "description": "Dopros Trainer KZ — тренажёр допроса для Казахстана",
   "main": "bot.js",
-  "scripts": {
-    "start": "node bot.js"
-  },
+  "scripts": { "start": "node bot.js" },
   "dependencies": {
     "express": "^4.19.2",
     "grammy": "^1.30.0",
-    "openai": "^4.50.0"
+    "openai": "^4.50.0",
+    "mongodb": "^6.5.0",
+    "node-fetch": "^2.7.0"
   },
-  "engines": {
-    "node": "20.x"
-  }
+  "engines": { "node": "20.x" }
 }
