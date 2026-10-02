@@ -9,8 +9,8 @@ const { MongoClient, ObjectId } = require('mongodb');
 
 // ============ CONFIG ============
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
-const MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
+const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
+const MODEL = 'deepseek-chat';
 const MONGODB_URI = process.env.MONGODB_URI;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID || '0');
 const CRYPTO_PAY_TOKEN = process.env.CRYPTO_PAY_TOKEN;
