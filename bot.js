@@ -23,8 +23,8 @@ if (!MONGODB_URI) { console.error('MONGODB_URI missing'); process.exit(1); }
 if (!ADMIN_ID) { console.error('ADMIN_ID missing'); process.exit(1); }
 
 const ai = new OpenAI({
-  apiKey: OPENROUTER_KEY,
-  baseURL: 'https://openrouter.ai/api/v1'
+  apiKey: DEEPSEEK_KEY,
+  baseURL: 'https://api.deepseek.com'
 });
 
 // ============ DATABASE ============
