@@ -18,7 +18,7 @@ const PRICE_STARS = parseInt(process.env.PRICE_STARS || '100');
 const PRICE_USDT = parseInt(process.env.PRICE_USDT || '2');
 
 if (!BOT_TOKEN) { console.error('TELEGRAM_BOT_TOKEN missing'); process.exit(1); }
-if (!OPENROUTER_KEY) { console.error('OPENROUTER_API_KEY missing'); process.exit(1); }
+if (!DEEPSEEK_KEY) { console.error('DEEPSEEK_API_KEY missing'); process.exit(1); }
 if (!MONGODB_URI) { console.error('MONGODB_URI missing'); process.exit(1); }
 if (!ADMIN_ID) { console.error('ADMIN_ID missing'); process.exit(1); }
 
