@@ -972,7 +972,6 @@ bot.on('message:text', async (ctx) => {
     try {
       const username = ctx.from.username ? '@' + ctx.from.username : ctx.from.first_name || null;
       const prompt = buildAdminReplyPrompt(text, username);
-            const prompt = buildAdminReplyPrompt(text, username);
       const aiResp = await ai.chat.completions.create({
         model: MODEL,
         messages: [{ role: 'user', content: prompt }],
