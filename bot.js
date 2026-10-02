@@ -251,3 +251,279 @@ function buildSummaryPrompt(status, incident, history, laws, stats) {
 💡 Что повторить: • [1] • [2]
 🎯 Рекомендация: [1-2 предложения]`;
 }
+
+// ============ ADMIN FAQ ============
+const ADMIN_FAQ = `
+ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ:
+
+О БОТЕ:
+• Что это? — Тренажёр допроса для Казахстана.
+• Это консультация юриста? — НЕТ.
+• Язык — только русский.
+• Работает 24/7.
+
+ОПЛАТА:
+• Сколько стоит? — 100 Stars ИЛИ 2 USDT.
+• Что даёт? — Вечный доступ, без подписок.
+• Бесплатно? — 1 тренировка.
+• Возврат? — НЕТ.
+• Способы — Stars и USDT.
+
+ФУНКЦИИ:
+• Сценарии: кража, ДТП, мошенничество, взлом, свидетель + свой.
+• Кнопка «🛡️ Мои права» — 8 действий.
+• Кнопка «📞 Жалобы» — прокурор, вышестоящий, протокол.
+
+ПРОБЛЕМЫ:
+• Бот не отвечает — подождите 30–60 сек.
+• Ошибка ИИ — /start заново.
+• Ошибка оплаты — напишите админу.
+
+ПРИВАТНОСТЬ:
+• Собираем: Telegram ID и статус оплаты.
+• /privacy — политика.
+• /delete_me — удаление.
+
+ПОДДЕРЖКА:
+• Время ответа — до 24 часов.
+• Только через чат.
+
+ПОДПИСКА:
+• Нет. Единый платёж.
+`;
+
+function buildAdminReplyPrompt(userMessage, username) {
+  return `Ты — администратор бота "Dopros Trainer KZ".
+Пользователь: ${username || 'без username'}
+СООБЩЕНИЕ: "${userMessage}"
+
+${ADMIN_FAQ}
+
+ПРАВИЛА:
+1. Простые вопросы (оплата, функции, ошибки) — отвечай сам, макс 4 предложения.
+2. Сложные (возврат, баг, жалоба, юр. вопрос, реклама) — ответь ТОЛЬКО: «Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.»
+3. Не обещай возврат. Не давай юр. консультаций.
+4. На «вы», вежливо, на русском.
+
+ФОРМАТ:
+CATEGORY: [SIMPLE или COMPLEX]
+REPLY: [текст]
+
+Если COMPLEX — REPLY всегда: «Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.»
+`;
+}
+
+// ============ SESSIONS ============
+const sessions = new Map();
+
+// ============ KEYBOARDS ============
+function mainReplyKeyboard() {
+  return new Keyboard()
+    .text('🎓 Завершить').text('💡 Подсказка').row()
+    .text('🛡️ Мои права').text('📊 Итог').row()
+    .text('💬 Написать админу').text('🔄 Сменить статус').resized().persistent();
+}
+function questionInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('💡 Подсказка', 'hint').row()
+    .text('🤔 Что он имел в виду?', 'meaning').row()
+    .text('🛡️ Мои права', 'rights_menu').row()
+    .text('⏭️ Пропустить', 'skip_question');
+}
+function rightsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('🛡️ Право на молчание', 'act:silence').row()
+    .text('👨‍⚖️ Позвать адвоката', 'act:lawyer').row()
+    .text('⏸️ Попросить перерыв', 'act:break').row()
+    .text('📝 Записать замечание', 'act:note').row()
+    .text('⚠️ Жалоба на давление', 'act:pressure').row()
+    .text('🌐 Требовать переводчика', 'act:translator').row()
+    .text('🚫 Отказаться подписывать', 'act:refuse_sign').row()
+    .text('🔍 Уточнить вопрос', 'act:clarify').row()
+    .text('📞 Жалобы и фиксация', 'complaint_menu');
+}
+function complaintsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📞 Прокурору', 'comp:prosecutor').row()
+    .text('📧 В вышестоящий орган', 'comp:higher').row()
+    .text('📝 Записать в протокол', 'comp:protocol').row()
+    .text('📸 Зафиксировать нарушение', 'comp:document').row()
+    .text('← Назад', 'rights_menu');
+}
+function afterEvalInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Сравнить с эталоном', 'compare_with_standard').row()
+    .text('📚 Показать статьи', 'show_laws');
+}
+function paywallKeyboard() {
+  return new InlineKeyboard()
+    .text(`⭐ Оплатить Stars — ${PRICE_STARS}`, 'pay:stars').row()
+    .text('💼 Как открыть кошелёк', 'wallet:howto').row()
+    .text(`💎 Оплатить через Wallet — ${PRICE_USDT} USDT`, 'pay:usdt').row()
+    .text('🔒 Политика конфиденциальности', 'show_privacy').row()
+    .text('💬 Написать админу', 'contact_admin');
+}
+
+function progressBar(sess) {
+  return `📊 *Раунд ${sess.round}*  ·  ✅ ${sess.correct}  ⚠️ ${sess.warnings}  ❌ ${sess.errors}`;
+}
+
+// ============ BOT ============
+const bot = new Bot(BOT_TOKEN);
+bot.catch(async (err) => {
+  console.error('Bot error:', err);
+  await logError(err, err.ctx?.from?.id);
+});
+
+// ============ AI CALL ============
+async function callAI(prompt, maxTokens, attempt = 1) {
+  let text = '';
+  try {
+    const r = await ai.chat.completions.create({
+      model: MODEL, messages: [{ role: 'user', content: prompt }],
+      temperature: 0.5, max_tokens: maxTokens
+    });
+    text = r.choices[0].message.content || '';
+  } catch (e) {
+    const is429 = e.message && (e.message.includes('429') || e.message.includes('rate') || e.message.includes('quota'));
+    if (is429 && attempt < 3) {
+      const wait = attempt * 15;
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return callAI(prompt, maxTokens, attempt + 1);
+    }
+    throw e;
+  }
+  const wrong = detectLanguage(text) === 'latin' || hasWrongJurisdiction(text);
+  if (wrong) {
+    try {
+      const retry = await ai.chat.completions.create({
+        model: MODEL,
+        messages: [
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: text },
+          { role: 'user', content: 'НЕВЕРНО! Только РУССКИЙ. Только законы КАЗАХСТАНА. Только формат.' }
+        ],
+        temperature: 0.2, max_tokens: maxTokens
+      });
+      const rt = retry.choices[0].message.content || '';
+      if (!hasWrongJurisdiction(rt)) text = rt;
+    } catch (e) {}
+  }
+  return text;
+}
+
+// ============ /start ============
+bot.command('start', async (ctx) => {
+  const userId = ctx.from.id;
+  await getUser(userId);
+  const u = await usersCol.findOne({ userId });
+
+  if (!u.paid && !u.trialUsed) {
+    sessions.delete(userId);
+    await ctx.reply(
+      '⚖️ *Тренажёр допроса (Казахстан)*\n\n' +
+      '🎁 *У вас 1 бесплатная тренировка.*\n' +
+      '⚠️ Это тренажёр, не замена адвоката.\n\n' +
+      '🔒 Персональные данные не собираются. /privacy\n\n' +
+      'Выберите режим:',
+      { parse_mode: 'Markdown',
+        reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
+    );
+    return;
+  }
+
+  if (!u.paid && u.trialUsed) {
+    await ctx.reply(
+      '🔒 *Бесплатная попытка использована*\n\n' +
+      'Для продолжения — оплатите доступ:\n' +
+      `• ⭐ Telegram Stars: ${PRICE_STARS}\n` +
+      `• 💎 USDT: ${PRICE_USDT}\n\n` +
+      '*Вечный доступ. Без подписок.*',
+      { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
+    );
+    return;
+  }
+
+  sessions.delete(userId);
+  await ctx.reply(
+    '⚖️ *Тренажёр допроса (Казахстан)*\n\n✅ Доступ активен.\n\nВыберите режим:',
+    { parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
+  );
+});
+
+// ============ /privacy ============
+bot.command('privacy', async (ctx) => {
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот *не собирает* персональные данные:\n• ФИО, ИИН, адрес, телефон\n• Email, карта, паспорт\n\n` +
+    `*Что хранится:*\n• Telegram ID\n• Username (публичный)\n• Статус оплаты и сумма\n• Дата последнего обращения\n\n` +
+    `*Кому передаются:*\n• Telegram — работа бота\n• Crypto Pay — приём USDT\n• AI — только текст сообщений\n\n` +
+    `*Хранение:* до удаления.\n*Удаление:* /delete_me\n\n` +
+    `Используя бота, вы соглашаетесь с политикой.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ============ /delete_me ============
+bot.command('delete_me', async (ctx) => {
+  const kb = new InlineKeyboard()
+    .text('❌ Да, удалить', 'confirm_delete').row()
+    .text('← Отмена', 'cancel_delete');
+  await ctx.reply(
+    `⚠️ *Удаление данных*\n\n` +
+    `Будут удалены:\n• Telegram ID\n• Статус оплаты\n• История обращений\n\n` +
+    `⚠️ Платный доступ будет утерян без возврата.\n\nПродолжить?`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+bot.callbackQuery('confirm_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const userId = ctx.from.id;
+  try {
+    await usersCol.deleteOne({ userId });
+    sessions.delete(userId);
+    if (ADMIN_ID) {
+      try {
+        await ctx.api.sendMessage(ADMIN_ID, `🗑 Пользователь удалил данные\n🆔 \`${userId}\``, { parse_mode: 'Markdown' });
+      } catch (e) {}
+    }
+    await ctx.reply('✅ *Данные удалены*\n\nTelegram ID удалён из базы. Сессия сброшена.', { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(e);
+    await ctx.reply('⚠️ Ошибка удаления. Напишите админу.');
+  }
+});
+
+bot.callbackQuery('cancel_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('❌ Удаление отменено.');
+});
+
+bot.callbackQuery('show_privacy', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот не собирает ФИО, ИИН, адрес, телефон, email, карту.\n\n` +
+    `*Храним:* Telegram ID, статус оплаты, время обращения.\n` +
+    `*Передаём:* Telegram, Crypto Pay, AI (только текст).\n` +
+    `*Удаление:* /delete_me\n\n` +
+    `Подробнее — /privacy.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('help', async (ctx) => {
+  await ctx.reply(
+    '⚖️ *Тренажёр допроса*\n\n' +
+    '• /start — начать\n' +
+    '• /reset — сбросить сессию\n' +
+    '• /finish — итог тренировки\n' +
+    '• /privacy — политика конфиденциальности\n' +
+    '• /delete_me — удалить мои данные\n' +
+    '• /help — справка\n\n' +
+    '📚 Статьи: УК РК, УПК РК, Конституция РК.',
+    { parse_mode: 'Markdown' }
+  );
+});
