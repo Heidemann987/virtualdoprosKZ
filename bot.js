@@ -640,4 +640,293 @@ bot.hears('🔄 Сменить статус', async (ctx) => {
     .text('📋 Ответчик', 'st:defendant');
   await ctx.reply('*Выберите новый статус:*', { parse_mode: 'Markdown', reply_markup: kb });
 });
+// ============ INLINE handlers ============
+bot.callbackQuery('hint', async (ctx) => { await ctx.answerCallbackQuery(); await handleHint(ctx); });
+async function handleHint(ctx) {
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  if (sess.mode === 'exam') return ctx.reply('💡 В режиме экзамена подсказки отключены.');
+  await ctx.replyWithChatAction('typing');
+  try {
+    const lastQ = sess.currentQuestion || '';
+    const relevant = findRelevantArticles(sess.incident + ' ' + lastQ, 3);
+    const hist = sess.history.map(m => (m.role === 'user' ? '👤 ' : '🎭 ') + m.content).join('\n\n');
+    const answer = await callAI(buildHintPrompt(sess.status, sess.incident, hist, relevant), 300);
+    await ctx.reply(answer, { parse_mode: 'Markdown' });
+  } catch (e) { await ctx.reply('⚠️ Ошибка подсказки.'); }
+}
+
+bot.callbackQuery('meaning', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.currentQuestion) return ctx.reply('Начните с /start');
+  await ctx.replyWithChatAction('typing');
+  try {
+    const relevant = findRelevantArticles(sess.currentQuestion, 3);
+    const answer = await callAI(buildMeaningPrompt(sess.currentQuestion, sess.incident, relevant), 500);
+    await ctx.reply(answer, { parse_mode: 'Markdown' });
+  } catch (e) { await ctx.reply('⚠️ Ошибка разбора.'); }
+});
+
+bot.callbackQuery('rights_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  await ctx.reply('🛡️ *Выберите действие:*', { parse_mode: 'Markdown', reply_markup: rightsInlineKeyboard() });
+});
+
+bot.callbackQuery(/^act:(silence|lawyer|break|note|pressure|translator|refuse_sign|clarify)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const action = ctx.match[1];
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  sess.actionsUsed = (sess.actionsUsed || 0) + 1;
+  await ctx.replyWithChatAction('typing');
+  try {
+    const answer = await callAI(buildActionPrompt(action, sess.status, sess.incident, sess.currentQuestion), 500);
+    await ctx.reply(answer, { parse_mode: 'Markdown' });
+    await ctx.reply('Продолжайте тренировку.');
+  } catch (e) { await ctx.reply('⚠️ Ошибка.'); }
+});
+
+bot.callbackQuery('complaint_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  await ctx.reply('📞 *Жалобы и фиксация:*', { parse_mode: 'Markdown', reply_markup: complaintsInlineKeyboard() });
+});
+
+bot.callbackQuery(/^comp:(prosecutor|higher|protocol|document)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const type = ctx.match[1];
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  await ctx.replyWithChatAction('typing');
+  try {
+    const answer = await callAI(buildComplaintPrompt(type, sess.status, sess.incident), 500);
+    await ctx.reply(answer, { parse_mode: 'Markdown' });
+  } catch (e) { await ctx.reply('⚠️ Ошибка.'); }
+});
+
+bot.callbackQuery('show_laws', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.lastLaws || !sess.lastLaws.length) return ctx.reply('📚 Статьи не подобраны.');
+  let text = '📚 *Статьи:*\n\n';
+  for (const a of sess.lastLaws) text += `*${a.title}*\n${a.text}\n\n`;
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+bot.callbackQuery('compare_with_standard', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.lastEvaluation || !sess.lastUserAnswer) return ctx.reply('📊 Нечего сравнивать.');
+  const match = sess.lastEvaluation.match(/🎯 Эталон: «(.+?)»/s);
+  const standard = match ? match[1] : '(не найдено)';
+  await ctx.reply(
+    `📊 *Сравнение с эталоном*\n\n👤 *Ваш ответ:*\n«${sess.lastUserAnswer}»\n\n🎯 *Эталон:*\n«${standard}»\n\n💡 Точность, ссылка на статью, краткость.`,
+    { parse_mode: 'Markdown' });
+});
+
+bot.callbackQuery('skip_question', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  sess.round++;
+  sess.errors++;
+  sess.history.push({ role: 'user', content: '[Пропущен вопрос]' });
+  await nextQuestion(ctx, sess);
+});
+
+bot.command('reset', async (ctx) => {
+  sessions.delete(ctx.from.id);
+  await ctx.reply('Сброшено. Напишите /start.');
+});
+
+bot.command('finish', async (ctx) => { await handleFinish(ctx); });
+async function handleFinish(ctx) {
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Нет активной сессии.');
+  await ctx.replyWithChatAction('typing');
+  try {
+    const hist = sess.history.map(m => (m.role === 'user' ? '👤 ' : '🎭 ') + m.content).join('\n\n');
+    const relevant = findRelevantArticles(sess.incident + ' ' + hist, 5);
+    const summary = await callAI(buildSummaryPrompt(sess.status, sess.incident, hist, relevant, sess), 1200);
+    await ctx.reply(summary, { parse_mode: 'Markdown' });
+    await ctx.reply('Напишите /start для новой тренировки.');
+    sessions.delete(ctx.from.id);
+  } catch (e) { await ctx.reply('⚠️ Ошибка формирования итога.'); }
+}
+
+async function nextQuestion(ctx, sess) {
+  await ctx.replyWithChatAction('typing');
+  try {
+    const hist = sess.history.map(m => (m.role === 'user' ? '👤 ' : '🎭 ') + m.content).join('\n\n');
+    const relevant = findRelevantArticles(sess.incident + ' ' + hist, 5);
+    sess.lastLaws = relevant;
+    const question = await callAI(buildQuestionPrompt(sess.status, sess.incident, hist, relevant), 500);
+    sess.currentQuestion = question;
+    sess.history.push({ role: 'assistant', content: question });
+    await ctx.reply(progressBar(sess), { parse_mode: 'Markdown' });
+    await ctx.reply(question, { parse_mode: 'Markdown', reply_markup: questionInlineKeyboard() });
+  } catch (e) { await ctx.reply('⚠️ ИИ недоступен. Подождите 30 секунд.'); }
+}
+
+// ============ MAIN TEXT ============
+bot.on('message:text', async (ctx) => {
+  const text = ctx.message.text;
+  if (text.startsWith('/')) return;
+  const userId = ctx.from.id;
+  const sess = sessions.get(userId);
+
+  if (userId === ADMIN_ID && sess?.replyToUserId) {
+    try {
+      await bot.api.sendMessage(sess.replyToUserId, `💬 *Ответ от администратора:*\n\n${text}`, { parse_mode: 'Markdown' });
+      await messagesCol.updateOne({ _id: new ObjectId(sess.replyMsgId) }, { $set: { replied: true, repliedAt: new Date(), replyText: text } });
+      await ctx.reply('✅ Ответ отправлен.');
+    } catch (e) { await ctx.reply('⚠️ Не удалось: ' + e.message); }
+    sess.replyToUserId = null;
+    sess.replyMsgId = null;
+    return;
+  }
+
+  if (sess?.chatWithAdmin) {
+    sess.chatWithAdmin = false;
+    await saveMessage(userId, text);
+    await ctx.replyWithChatAction('typing');
+    try {
+      const username = ctx.from.username ? '@' + ctx.from.username : ctx.from.first_name || null;
+      const prompt = buildAdminReplyPrompt(text, username);
+      const aiResp = await ai.chat.completions.create({
+        model: MODEL, messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3, max_tokens: 400
+      });
+      const raw = aiResp.choices[0].message.content || '';
+      const catMatch = raw.match(/CATEGORY:\s*(SIMPLE|COMPLEX)/i);
+      const replyMatch = raw.match(/REPLY:\s*([\s\S]+)/i);
+      const category = catMatch ? catMatch[1].toUpperCase() : 'COMPLEX';
+      const replyText = replyMatch ? replyMatch[1].trim() : 'Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.';
+      await ctx.reply(replyText);
+
+      if (ADMIN_ID) {
+        const adminText = category === 'COMPLEX'
+          ? `🚨 *СЛОЖНЫЙ ВОПРОС*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 «${replyText}»`
+          : `✅ *Простой вопрос*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 ${replyText}`;
+        const kb = new InlineKeyboard();
+        if (category === 'COMPLEX') {
+          const lastMsg = await messagesCol.findOne({ fromUserId: userId }, { sort: { createdAt: -1 } });
+          if (lastMsg) kb.text('↩️ Ответить лично', `reply:${lastMsg._id}`);
+        }
+        try { await ctx.api.sendMessage(ADMIN_ID, adminText, { parse_mode: 'Markdown', reply_markup: kb }); } catch (e) {}
+      }
+    } catch (e) {
+      console.error(e);
+      await logError(e, userId);
+      await ctx.reply('⚠️ Не удалось обработать. Администратор ответит лично.');
+    }
+    return;
+  }
+
+  const u = await getUser(userId);
+  if (!u.paid && u.trialUsed && !sess?.incident) {
+    return ctx.reply('🔒 *Доступ заблокирован*\n\nОплатите:', { parse_mode: 'Markdown', reply_markup: paywallKeyboard() });
+  }
+
+  const labels = ['🎓 Завершить', '💡 Подсказка', '📊 Итог', '🛡️ Мои права', '💬 Написать админу', '🔄 Сменить статус'];
+  if (labels.includes(text)) return;
+
+  if (!sess) return ctx.reply('Начните с /start');
+  if (!sess.status) return ctx.reply('Выберите статус: /start');
+
+  if (!sess.incident) {
+    if (!u.paid && !u.trialUsed) await markTrialUsed(userId);
+    await startTraining(ctx, sess, text);
+    return;
+  }
+
+  sess.history.push({ role: 'user', content: text });
+  sess.lastUserAnswer = text;
+  await ctx.reply('⏳ Анализирую ответ...');
+  const lastQ = sess.currentQuestion || '';
+  const relevant = findRelevantArticles(lastQ + ' ' + text, 5);
+  sess.lastLaws = relevant;
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const hist = sess.history.map(m => (m.role === 'user' ? '👤 ' : '🎭 ') + m.content).join('\n\n');
+    const evaluation = await callAI(buildEvaluationPrompt(sess.status, sess.incident, hist, relevant), 700);
+    sess.lastEvaluation = evaluation;
+    if (evaluation.includes('📊 Оценка: ✅')) sess.correct++;
+    else if (evaluation.includes('📊 Оценка: ⚠️')) sess.warnings++;
+    else if (evaluation.includes('📊 Оценка: ❌')) sess.errors++;
+    sess.round++;
+    await ctx.reply(evaluation, { parse_mode: 'Markdown', reply_markup: afterEvalInlineKeyboard() });
+    await nextQuestion(ctx, sess);
+  } catch (e) {
+    console.error(e);
+    await logError(e, userId);
+    await ctx.reply('⚠️ ИИ недоступен. Подождите 30 секунд.');
+  }
+});
+
+// ============ CRYPTO PAY WEBHOOK ============
+const app = express();
+app.use(express.json());
+
+app.post('/api/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    if (update.update_type === 'invoice_paid') {
+      const inv = update.payload;
+      let payload = {};
+      try { payload = JSON.parse(inv.payload || '{}'); } catch (e) {}
+      const userId = payload.userId;
+      if (userId) {
+        await setUserPaid(userId, 'usdt');
+        await paymentsCol.updateOne({ invoiceId: inv.invoice_id }, { $set: { status: 'paid', paidAt: new Date() } });
+        try { await bot.api.sendMessage(userId, '✅ *Оплата USDT получена!*\n\nДоступ активирован навсегда. Отправьте /start.', { parse_mode: 'Markdown' }); } catch (e) {}
+        if (ADMIN_ID) {
+          try { await bot.api.sendMessage(ADMIN_ID, `💰 *Оплата USDT*\n👤 \`${userId}\`\n💎 ${inv.amount} USDT`, { parse_mode: 'Markdown' }); } catch (e) {}
+        }
+      }
+    }
+    res.sendStatus(200);
+  } catch (e) { console.error('Webhook error:', e); res.sendStatus(500); }
+});
+
+app.get('/', (req, res) => res.send('Dopros Trainer KZ v10 running'));
+
+// ============ START ============
+let retryCount = 0;
+const MAX_RETRIES = 10;
+
+async function startBot() {
+  try {
+    await connectDB();
+    await bot.start({
+      drop_pending_updates: true,
+      onStart: (bi) => {
+        console.log(`🚀 Dopros Trainer KZ v10 started as @${bi.username}`);
+        retryCount = 0;
+      }
+    });
+  } catch (e) {
+    const is409 = e.message && e.message.includes('409');
+    if (is409 && retryCount < MAX_RETRIES) {
+      retryCount++;
+      const wait = Math.min(30 * retryCount, 120);
+      console.log(`⚠️ 409. Retry in ${wait}s...`);
+      setTimeout(startBot, wait * 1000);
+    } else {
+      console.error('❌ Fatal:', e.message);
+      process.exit(1);
+    }
+  }
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('HTTP server on port ' + PORT);
+  startBot();
+});
 
