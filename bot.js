@@ -1,4 +1,4 @@
-// bot.js — Dopros Trainer KZ v9 (MongoDB + Stars + USDT + Admin + AI-чат)
+// bot.js — Dopros Trainer KZ v9.1 (обновлённое приветствие)
 const { Bot, InlineKeyboard, Keyboard } = require('grammy');
 const OpenAI = require('openai');
 const express = require('express');
@@ -250,46 +250,30 @@ function buildSummaryPrompt(status, incident, history, laws, stats) {
 📊 Слабые места: • [1] • [2]
 💡 Что повторить: • [1] • [2]
 🎯 Рекомендация: [1-2 предложения]`;
-}
+    }
 
 // ============ ADMIN FAQ ============
 const ADMIN_FAQ = `
 ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ:
-
 О БОТЕ:
 • Что это? — Тренажёр допроса для Казахстана.
 • Это консультация юриста? — НЕТ.
 • Язык — только русский.
 • Работает 24/7.
-
 ОПЛАТА:
 • Сколько стоит? — 100 Stars ИЛИ 2 USDT.
 • Что даёт? — Вечный доступ, без подписок.
 • Бесплатно? — 1 тренировка.
 • Возврат? — НЕТ.
-• Способы — Stars и USDT.
-
 ФУНКЦИИ:
 • Сценарии: кража, ДТП, мошенничество, взлом, свидетель + свой.
 • Кнопка «🛡️ Мои права» — 8 действий.
-• Кнопка «📞 Жалобы» — прокурор, вышестоящий, протокол.
-
-ПРОБЛЕМЫ:
-• Бот не отвечает — подождите 30–60 сек.
-• Ошибка ИИ — /start заново.
-• Ошибка оплаты — напишите админу.
-
 ПРИВАТНОСТЬ:
 • Собираем: Telegram ID и статус оплаты.
 • /privacy — политика.
 • /delete_me — удаление.
-
 ПОДДЕРЖКА:
 • Время ответа — до 24 часов.
-• Только через чат.
-
-ПОДПИСКА:
-• Нет. Единый платёж.
 `;
 
 function buildAdminReplyPrompt(userMessage, username) {
@@ -412,33 +396,54 @@ async function callAI(prompt, maxTokens, attempt = 1) {
   return text;
 }
 
-// ============ /start ============
+// ============ /start — НОВОЕ ПРИВЕТСТВИЕ ============
 bot.command('start', async (ctx) => {
   const userId = ctx.from.id;
   await getUser(userId);
   const u = await usersCol.findOne({ userId });
 
+  const WELCOME =
+    '⚖️ *Dopros Trainer KZ*\n' +
+    '_AI-тренажёр допроса для Казахстана_\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    'Вы пройдёте реалистичную симуляцию общения со следователем — с разбором каждой ловушки и ссылками на УПК РК.\n\n' +
+    '*Как это работает:*\n' +
+    '1️⃣ Опишете ситуацию или выберете сценарий\n' +
+    '2️⃣ Ответите на вопросы следователя\n' +
+    '3️⃣ После каждого ответа — разбор + эталон\n' +
+    '4️⃣ В конце — оценка и рекомендации\n\n' +
+    '*Что внутри:*\n' +
+    '• 5 сценариев (кража, ДТП, мошенничество, взлом, свидетель)\n' +
+    '• 6 процессуальных статусов\n' +
+    '• 8 процессуальных действий\n' +
+    '• Итоговая оценка\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '🎁 *Первая тренировка — бесплатно*\n' +
+    '🔒 Персональные данные не собираются\n\n' +
+    '⚠️ Это тренажёр, не замена адвоката\n\n' +
+    '*Выберите режим:*';
+
   if (!u.paid && !u.trialUsed) {
     sessions.delete(userId);
-    await ctx.reply(
-      '⚖️ *Тренажёр допроса (Казахстан)*\n\n' +
-      '🎁 *У вас 1 бесплатная тренировка.*\n' +
-      '⚠️ Это тренажёр, не замена адвоката.\n\n' +
-      '🔒 Персональные данные не собираются. /privacy\n\n' +
-      'Выберите режим:',
-      { parse_mode: 'Markdown',
-        reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
-    );
+    await ctx.reply(WELCOME, {
+      parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam')
+    });
     return;
   }
 
   if (!u.paid && u.trialUsed) {
     await ctx.reply(
-      '🔒 *Бесплатная попытка использована*\n\n' +
-      'Для продолжения — оплатите доступ:\n' +
-      `• ⭐ Telegram Stars: ${PRICE_STARS}\n` +
-      `• 💎 USDT: ${PRICE_USDT}\n\n` +
-      '*Вечный доступ. Без подписок.*',
+      '🔒 *Бесплатная тренировка завершена*\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      'Понравилось? Откройте *полный доступ*:\n\n' +
+      '✅ Неограниченные тренировки\n' +
+      '✅ Все сценарии и статусы\n' +
+      '✅ Разбор каждой ловушки\n' +
+      '✅ Итоговая оценка с рекомендациями\n' +
+      '✅ Доступ навсегда, без подписок\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      `💎 Всего *${PRICE_USDT} USDT* ИЛИ *${PRICE_STARS} Stars*`,
       { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
     );
     return;
@@ -446,7 +451,10 @@ bot.command('start', async (ctx) => {
 
   sessions.delete(userId);
   await ctx.reply(
-    '⚖️ *Тренажёр допроса (Казахстан)*\n\n✅ Доступ активен.\n\nВыберите режим:',
+    '⚖️ *Dopros Trainer KZ*\n\n' +
+    '✅ *Доступ активен навсегда*\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '*Выберите режим:*',
     { parse_mode: 'Markdown',
       reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
   );
@@ -465,7 +473,6 @@ bot.command('privacy', async (ctx) => {
   );
 });
 
-// ============ /delete_me ============
 bot.command('delete_me', async (ctx) => {
   const kb = new InlineKeyboard()
     .text('❌ Да, удалить', 'confirm_delete').row()
@@ -485,15 +492,10 @@ bot.callbackQuery('confirm_delete', async (ctx) => {
     await usersCol.deleteOne({ userId });
     sessions.delete(userId);
     if (ADMIN_ID) {
-      try {
-        await ctx.api.sendMessage(ADMIN_ID, `🗑 Пользователь удалил данные\n🆔 \`${userId}\``, { parse_mode: 'Markdown' });
-      } catch (e) {}
+      try { await ctx.api.sendMessage(ADMIN_ID, `🗑 Пользователь удалил данные\n🆔 \`${userId}\``, { parse_mode: 'Markdown' }); } catch (e) {}
     }
     await ctx.reply('✅ *Данные удалены*\n\nTelegram ID удалён из базы. Сессия сброшена.', { parse_mode: 'Markdown' });
-  } catch (e) {
-    console.error(e);
-    await ctx.reply('⚠️ Ошибка удаления. Напишите админу.');
-  }
+  } catch (e) { console.error(e); await ctx.reply('⚠️ Ошибка удаления. Напишите админу.'); }
 });
 
 bot.callbackQuery('cancel_delete', async (ctx) => {
@@ -516,7 +518,7 @@ bot.callbackQuery('show_privacy', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   await ctx.reply(
-    '⚖️ *Тренажёр допроса*\n\n' +
+    '⚖️ *Dopros Trainer KZ*\n\n' +
     '• /start — начать\n' +
     '• /reset — сбросить сессию\n' +
     '• /finish — итог тренировки\n' +
@@ -584,9 +586,7 @@ bot.callbackQuery('admin:errors', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   const errs = await errorsCol.find().sort({ createdAt: -1 }).limit(10).toArray();
   let text = '❌ *Последние 10 ошибок:*\n\n';
-  for (const e of errs) {
-    text += `• \`${e.message.slice(0, 100)}\`\n  (${e.createdAt.toISOString().slice(0, 19)})\n\n`;
-  }
+  for (const e of errs) text += `• \`${e.message.slice(0, 100)}\`\n  (${e.createdAt.toISOString().slice(0, 19)})\n\n`;
   await ctx.reply(text || 'Ошибок нет.', { parse_mode: 'Markdown' });
 });
 
@@ -615,110 +615,7 @@ bot.callbackQuery(/^reply:(.+)$/, async (ctx) => {
 bot.callbackQuery('pay:stars', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.answerCallbackQuery();
-  await ctx.replyWithInvoice(
-    'Dopros Trainer KZ — Lifetime Access',
-    'Вечный доступ. Без подписок.',
-    `stars_${userId}_${Date.now()}`,
-    'XTR',
-    [{ label: 'Lifetime Access', amount: PRICE_STARS }],
-    { provider_token: '' }
-  );
-});
-
-// ============ PAY: USDT ============
-bot.callbackQuery('pay:usdt', async (ctx) => {
-  const userId = ctx.from.id;
-  await ctx.answerCallbackQuery();
-  await ctx.reply('💎 Готовлю счёт...');
-  try {
-    const inv = await createUsdtInvoice(userId);
-    await paymentsCol.insertOne({ userId, method: 'usdt', amount: PRICE_USDT,
-      invoiceId: inv.invoice_id, status: 'pending', createdAt: new Date() });
-    const kb = new InlineKeyboard().url('💎 Оплатить USDT', inv.bot_invoice_url);
-    await ctx.reply(`💎 *Счёт на ${PRICE_USDT} USDT*\n\nНажмите кнопку ниже, чтобы оплатить.`,
-      { parse_mode: 'Markdown', reply_markup: kb });
-  } catch (e) {
-    console.error(e);
-    await logError(e, userId);
-    await ctx.reply('⚠️ Ошибка создания счёта. Попробуйте позже.');
-  }
-});
-
-// ============ SUCCESSFUL PAYMENT (STARS) ============
-bot.on('message:successful_payment', async (ctx) => {
-  const userId = ctx.from.id;
-  const p = ctx.message.successful_payment;
-  await setUserPaid(userId, 'stars');
-  await paymentsCol.insertOne({ userId, method: 'stars', amount: p.total_amount,
-    currency: 'XTR', telegramChargeId: p.telegram_payment_charge_id,
-    status: 'paid', createdAt: new Date() });
-  if (ADMIN_ID) {
-    try {
-      await ctx.api.sendMessage(ADMIN_ID,
-        `💰 *Новая оплата Stars*\n👤 ${ctx.from.first_name || ''} @${ctx.from.username || '—'}\n🆔 \`${userId}\`\n⭐ ${p.total_amount} XTR`,
-        { parse_mode: 'Markdown' });
-    } catch (e) {}
-  }
-  await ctx.reply('✅ *Оплата получена!*\n\nДоступ активирован навсегда. Отправьте /start.', { parse_mode: 'Markdown' });
-});
-
-// ============ WALLET HOWTO ============
-bot.callbackQuery('wallet:howto', async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const instruction =
-    `💼 *Как оплатить через Telegram Wallet*\n\n` +
-    `*ЧАСТЬ 1. КОШЕЛЁК*\n\n` +
-    `*Шаг 1.* В поиске Telegram введите *@wallet*.\n` +
-    `Выберите бота с *синей галочкой ✓*.\n\n` +
-    `*Шаг 2.* Нажмите *Start* → *Open Wallet*.\n\n` +
-    `*Шаг 3.* Установите *PIN-код* (4–6 цифр).\n\n` +
-    `*ЧАСТЬ 2. ПОПОЛНЕНИЕ*\n\n` +
-    `*Шаг 4.* В кошельке нажмите *«+»* → *Add Crypto*.\n\n` +
-    `Способы:\n` +
-    `• *P2P Express* — покупка с карты (проще всего).\n` +
-    `• *Bank Card* — прямая покупка.\n` +
-    `• *Transfer* — если есть USDT на бирже.\n\n` +
-    `*ЧАСТЬ 3. ОПЛАТА ДОСТУПА*\n\n` +
-    `*Шаг 5.* В Wallet должно быть минимум *3 USDT*.\n\n` +
-    `*Шаг 6.* Вернитесь в бота → *«💎 Оплатить через Wallet»*.\n\n` +
-    `*Шаг 7.* Выберите сеть *TRC20* (дешевле) или *TON*.\n\n` +
-    `*Шаг 8.* Подтвердите → доступ активируется автоматически.\n\n` +
-    `⚠️ Комиссия сети — 0.5–1 USDT.\nВозврат средств НЕ производится.`;
-
-  const kb = new InlineKeyboard()
-    .text('🚀 Открыть @wallet', 'open_wallet').row()
-    .text('💎 Оплатить через Wallet', 'pay:usdt').row()
-    .text('💬 Написать админу', 'contact_admin');
-
-  await ctx.reply(instruction, { parse_mode: 'Markdown', reply_markup: kb });
-});
-
-bot.callbackQuery('open_wallet', async (ctx) => {
-  await ctx.answerCallbackQuery({ text: 'Ищите @wallet в Telegram' });
-  await ctx.reply('🚀 *Откройте @wallet:*\n\n👉 [Открыть @wallet](https://t.me/wallet)\n\nПосле — вернитесь и нажмите *💎 Оплатить через Wallet*.',
-    { parse_mode: 'Markdown' });
-});
-
-// ============ CONTACT ADMIN (AI-FIRST) ============
-bot.callbackQuery('contact_admin', async (ctx) => {
-  await ctx.answerCallbackQuery();
-  sessions.set(ctx.from.id, { ...(sessions.get(ctx.from.id) || {}), chatWithAdmin: true });
-  await ctx.reply('💬 *Чат с администратором*\n\nОпишите вопрос. Простые обработает AI, сложные — передадутся админу лично.\n\n❌ /cancel — отмена.',
-    { parse_mode: 'Markdown' });
-});
-
-bot.hears('💬 Написать админу', async (ctx) => {
-  sessions.set(ctx.from.id, { ...(sessions.get(ctx.from.id) || {}), chatWithAdmin: true });
-  await ctx.reply('💬 *Чат с администратором*\n\nОпишите вопрос одним текстом.\n\n❌ /cancel — отмена.',
-    { parse_mode: 'Markdown' });
-});
-
-bot.command('cancel', async (ctx) => {
-  const s = sessions.get(ctx.from.id);
-  if (s) { s.chatWithAdmin = false; s.replyToUserId = null; }
-  await ctx.reply('❌ Отменено.');
-});
-
+ 
 // ============ MODE ============
 bot.callbackQuery(/^mode:(beginner|exam)$/, async (ctx) => {
   const mode = ctx.match[1];
@@ -752,7 +649,7 @@ bot.callbackQuery(/^st:(witness|suspect|accused|victim|plaintiff|defendant)$/, a
     .text('🏠 Кража со взломом', 'sc:burglary').row()
     .text('🧑‍⚖️ Свидетель по чужому делу', 'sc:witness_other').row()
     .text('📝 Свой инцидент', 'sc:custom');
-  await ctx.reply(`*${STATUS[status]}*\n\n*Выберите сценарий* или опишите свой:`, { parse_mode: 'Markdown', reply_markup: kb });
+  await ctx.reply(`*${STATUS[status]}*\n\n*Выберите сценарий:*`, { parse_mode: 'Markdown', reply_markup: kb });
 });
 
 // ============ SCENARIO ============
@@ -858,7 +755,7 @@ bot.callbackQuery(/^act:(silence|lawyer|break|note|pressure|translator|refuse_si
   try {
     const answer = await callAI(buildActionPrompt(action, sess.status, sess.incident, sess.currentQuestion), 500);
     await ctx.reply(answer, { parse_mode: 'Markdown' });
-    await ctx.reply('Продолжайте тренировку. Ответьте следователю или используйте другое право.');
+    await ctx.reply('Продолжайте тренировку.');
   } catch (e) { await ctx.reply('⚠️ Ошибка.'); }
 });
 
@@ -897,7 +794,7 @@ bot.callbackQuery('compare_with_standard', async (ctx) => {
   const match = sess.lastEvaluation.match(/🎯 Эталон: «(.+?)»/s);
   const standard = match ? match[1] : '(не найдено)';
   await ctx.reply(
-    `📊 *Сравнение с эталоном*\n\n👤 *Ваш ответ:*\n«${sess.lastUserAnswer}»\n\n🎯 *Эталон:*\n«${standard}»\n\n💡 Обратите внимание:\n• Точность\n• Ссылка на статью\n• Краткость`,
+    `📊 *Сравнение с эталоном*\n\n👤 *Ваш ответ:*\n«${sess.lastUserAnswer}»\n\n🎯 *Эталон:*\n«${standard}»\n\n💡 Точность, ссылка на статью, краткость.`,
     { parse_mode: 'Markdown' });
 });
 
@@ -952,19 +849,19 @@ bot.on('message:text', async (ctx) => {
   const userId = ctx.from.id;
   const sess = sessions.get(userId);
 
-  // Admin reply mode
+  // Admin reply
   if (userId === ADMIN_ID && sess?.replyToUserId) {
     try {
       await bot.api.sendMessage(sess.replyToUserId, `💬 *Ответ от администратора:*\n\n${text}`, { parse_mode: 'Markdown' });
       await messagesCol.updateOne({ _id: new ObjectId(sess.replyMsgId) }, { $set: { replied: true, repliedAt: new Date(), replyText: text } });
-      await ctx.reply('✅ Ответ отправлен пользователю.');
-    } catch (e) { await ctx.reply('⚠️ Не удалось отправить: ' + e.message); }
+      await ctx.reply('✅ Ответ отправлен.');
+    } catch (e) { await ctx.reply('⚠️ Не удалось: ' + e.message); }
     sess.replyToUserId = null;
     sess.replyMsgId = null;
     return;
   }
 
-  // User chat with admin — AI-first
+  // Chat with admin (AI-first)
   if (sess?.chatWithAdmin) {
     sess.chatWithAdmin = false;
     await saveMessage(userId, text);
@@ -973,8 +870,7 @@ bot.on('message:text', async (ctx) => {
       const username = ctx.from.username ? '@' + ctx.from.username : ctx.from.first_name || null;
       const prompt = buildAdminReplyPrompt(text, username);
       const aiResp = await ai.chat.completions.create({
-        model: MODEL,
-        messages: [{ role: 'user', content: prompt }],
+        model: MODEL, messages: [{ role: 'user', content: prompt }],
         temperature: 0.3, max_tokens: 400
       });
       const raw = aiResp.choices[0].message.content || '';
@@ -982,16 +878,12 @@ bot.on('message:text', async (ctx) => {
       const replyMatch = raw.match(/REPLY:\s*([\s\S]+)/i);
       const category = catMatch ? catMatch[1].toUpperCase() : 'COMPLEX';
       const replyText = replyMatch ? replyMatch[1].trim() : 'Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.';
-
       await ctx.reply(replyText);
 
       if (ADMIN_ID) {
-        let adminText;
-        if (category === 'COMPLEX') {
-          adminText = `🚨 *СЛОЖНЫЙ ВОПРОС*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 AI: «${replyText}»`;
-        } else {
-          adminText = `✅ *Простой вопрос*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 ${replyText}`;
-        }
+        const adminText = category === 'COMPLEX'
+          ? `🚨 *СЛОЖНЫЙ ВОПРОС*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 «${replyText}»`
+          : `✅ *Простой вопрос*\n\n👤 ${ctx.from.first_name || ''} ${username || ''}\n🆔 \`${userId}\`\n\n💬 ${text}\n\n🤖 ${replyText}`;
         const kb = new InlineKeyboard();
         if (category === 'COMPLEX') {
           const lastMsg = await messagesCol.findOne({ fromUserId: userId }, { sort: { createdAt: -1 } });
@@ -1002,14 +894,13 @@ bot.on('message:text', async (ctx) => {
     } catch (e) {
       console.error(e);
       await logError(e, userId);
-      await ctx.reply('⚠️ Не удалось обработать сообщение. Администратор ответит лично.');
+      await ctx.reply('⚠️ Не удалось обработать. Администратор ответит лично.');
     }
     return;
   }
 
   // Access check
   const u = await getUser(userId);
-
   if (!u.paid && u.trialUsed && !sess?.incident) {
     return ctx.reply('🔒 *Доступ заблокирован*\n\nОплатите:', { parse_mode: 'Markdown', reply_markup: paywallKeyboard() });
   }
@@ -1066,13 +957,9 @@ app.post('/api/webhook', async (req, res) => {
       if (userId) {
         await setUserPaid(userId, 'usdt');
         await paymentsCol.updateOne({ invoiceId: inv.invoice_id }, { $set: { status: 'paid', paidAt: new Date() } });
-        try {
-          await bot.api.sendMessage(userId, '✅ *Оплата USDT получена!*\n\nДоступ активирован навсегда. Отправьте /start.', { parse_mode: 'Markdown' });
-        } catch (e) {}
+        try { await bot.api.sendMessage(userId, '✅ *Оплата USDT получена!*\n\nДоступ активирован навсегда. Отправьте /start.', { parse_mode: 'Markdown' }); } catch (e) {}
         if (ADMIN_ID) {
-          try {
-            await bot.api.sendMessage(ADMIN_ID, `💰 *Оплата USDT*\n👤 \`${userId}\`\n💎 ${inv.amount} USDT`, { parse_mode: 'Markdown' });
-          } catch (e) {}
+          try { await bot.api.sendMessage(ADMIN_ID, `💰 *Оплата USDT*\n👤 \`${userId}\`\n💎 ${inv.amount} USDT`, { parse_mode: 'Markdown' }); } catch (e) {}
         }
       }
     }
@@ -1080,7 +967,7 @@ app.post('/api/webhook', async (req, res) => {
   } catch (e) { console.error('Webhook error:', e); res.sendStatus(500); }
 });
 
-app.get('/', (req, res) => res.send('Dopros Trainer KZ v9 running'));
+app.get('/', (req, res) => res.send('Dopros Trainer KZ v9.1 running'));
 
 // ============ START ============
 let retryCount = 0;
@@ -1092,7 +979,7 @@ async function startBot() {
     await bot.start({
       drop_pending_updates: true,
       onStart: (bi) => {
-        console.log(`🚀 Dopros Trainer KZ v9 started as @${bi.username}`);
+        console.log(`🚀 Dopros Trainer KZ v9.1 started as @${bi.username}`);
         retryCount = 0;
       }
     });
@@ -1114,6 +1001,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('HTTP server on port ' + PORT);
   startBot();
-});
-
-
+}); 
