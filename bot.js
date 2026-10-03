@@ -840,7 +840,7 @@ async function nextQuestion(ctx, sess) {
     await ctx.reply(progressBar(sess), { parse_mode: 'Markdown' });
     await ctx.reply(question, { parse_mode: 'Markdown', reply_markup: questionInlineKeyboard() });
   } catch (e) { await ctx.reply('⚠️ ИИ недоступен. Подождите 30 секунд.'); }
-}
+} ) ;
 
 // ============ MAIN TEXT ============
 bot.on('message:text', async (ctx) => {
