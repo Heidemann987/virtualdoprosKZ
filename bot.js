@@ -445,4 +445,199 @@ bot.command('start', async (ctx) => {
       reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
   );
 });
+// ============ PAY: STARS ============
+bot.callbackQuery('pay:stars', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCallbackQuery();
+  await ctx.replyWithInvoice(
+    'Dopros Trainer KZ — Lifetime Access',
+    'Вечный доступ. Без подписок.',
+    `stars_${userId}_${Date.now()}`,
+    'XTR',
+    [{ label: 'Lifetime Access', amount: PRICE_STARS }],
+    { provider_token: '' }
+  );
+});
+
+// ============ PAY: USDT ============
+bot.callbackQuery('pay:usdt', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCallbackQuery();
+  await ctx.reply('💎 Готовлю счёт...');
+  try {
+    const inv = await createUsdtInvoice(userId);
+    await paymentsCol.insertOne({ userId, method: 'usdt', amount: PRICE_USDT,
+      invoiceId: inv.invoice_id, status: 'pending', createdAt: new Date() });
+    const kb = new InlineKeyboard().url('💎 Оплатить USDT', inv.bot_invoice_url);
+    await ctx.reply(`💎 *Счёт на ${PRICE_USDT} USDT*\n\nНажмите кнопку ниже, чтобы оплатить.`,
+      { parse_mode: 'Markdown', reply_markup: kb });
+  } catch (e) {
+    console.error(e);
+    await logError(e, userId);
+    await ctx.reply('⚠️ Ошибка создания счёта. Попробуйте позже.');
+  }
+});
+
+// ============ SUCCESSFUL PAYMENT (STARS) ============
+bot.on('message:successful_payment', async (ctx) => {
+  const userId = ctx.from.id;
+  const p = ctx.message.successful_payment;
+  await setUserPaid(userId, 'stars');
+  await paymentsCol.insertOne({ userId, method: 'stars', amount: p.total_amount,
+    currency: 'XTR', telegramChargeId: p.telegram_payment_charge_id,
+    status: 'paid', createdAt: new Date() });
+  if (ADMIN_ID) {
+    try {
+      await ctx.api.sendMessage(ADMIN_ID,
+        `💰 *Новая оплата Stars*\n👤 ${ctx.from.first_name || ''} @${ctx.from.username || '—'}\n🆔 \`${userId}\`\n⭐ ${p.total_amount} XTR`,
+        { parse_mode: 'Markdown' });
+    } catch (e) {}
+  }
+  await ctx.reply('✅ *Оплата получена!*\n\nДоступ активирован навсегда. Отправьте /start.', { parse_mode: 'Markdown' });
+});
+
+// ============ WALLET HOWTO ============
+bot.callbackQuery('wallet:howto', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const instruction =
+    `💼 *Как оплатить через Telegram Wallet*\n\n` +
+    `*ЧАСТЬ 1. КОШЕЛЁК*\n\n` +
+    `*Шаг 1.* В поиске Telegram введите *@wallet*.\nВыберите бота с *синей галочкой ✓*.\n\n` +
+    `*Шаг 2.* Нажмите *Start* → *Open Wallet*.\n\n` +
+    `*Шаг 3.* Установите *PIN-код* (4–6 цифр).\n\n` +
+    `*ЧАСТЬ 2. ПОПОЛНЕНИЕ*\n\n` +
+    `*Шаг 4.* Нажмите *«+»* → *Add Crypto*.\n\n` +
+    `Способы:\n• *P2P Express* — покупка с карты.\n• *Bank Card* — прямая покупка.\n• *Transfer* — с биржи.\n\n` +
+    `*ЧАСТЬ 3. ОПЛАТА*\n\n` +
+    `*Шаг 5.* Минимум *3 USDT* в кошельке.\n\n` +
+    `*Шаг 6.* Вернитесь → *«💎 Оплатить через Wallet»*.\n\n` +
+    `*Шаг 7.* Сеть *TRC20* или *TON*.\n\n` +
+    `*Шаг 8.* Подтвердите → доступ активируется.\n\n` +
+    `⚠️ Комиссия сети 0.5–1 USDT.\nВозврат НЕ производится.`;
+  const kb = new InlineKeyboard()
+    .text('🚀 Открыть @wallet', 'open_wallet').row()
+    .text('💎 Оплатить через Wallet', 'pay:usdt').row()
+    .text('💬 Написать админу', 'contact_admin');
+  await ctx.reply(instruction, { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+bot.callbackQuery('open_wallet', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Ищите @wallet в Telegram' });
+  await ctx.reply('🚀 *Откройте @wallet:*\n\n👉 [Открыть @wallet](https://t.me/wallet)\n\nПосле — *💎 Оплатить через Wallet*.',
+    { parse_mode: 'Markdown' });
+});
+
+// ============ CONTACT ADMIN (AI-FIRST) ============
+bot.callbackQuery('contact_admin', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  sessions.set(ctx.from.id, { ...(sessions.get(ctx.from.id) || {}), chatWithAdmin: true });
+  await ctx.reply('💬 *Чат с администратором*\n\nОпишите вопрос. Простые обработает AI, сложные — передадутся админу.\n\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' });
+});
+
+bot.hears('💬 Написать админу', async (ctx) => {
+  sessions.set(ctx.from.id, { ...(sessions.get(ctx.from.id) || {}), chatWithAdmin: true });
+  await ctx.reply('💬 *Чат с администратором*\n\nОпишите вопрос.\n\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' });
+});
+
+bot.command('cancel', async (ctx) => {
+  const s = sessions.get(ctx.from.id);
+  if (s) { s.chatWithAdmin = false; s.replyToUserId = null; }
+  await ctx.reply('❌ Отменено.');
+});
+
+// ============ MODE ============
+bot.callbackQuery(/^mode:(beginner|exam)$/, async (ctx) => {
+  const mode = ctx.match[1];
+  sessions.set(ctx.from.id, {
+    mode, status: null, incident: null, history: [],
+    round: 0, correct: 0, warnings: 0, errors: 0, actionsUsed: 0,
+    currentQuestion: null, lastLaws: [], lastEvaluation: null, lastUserAnswer: null
+  });
+  await ctx.answerCallbackQuery();
+  const kb = new InlineKeyboard()
+    .text('👤 Свидетель', 'st:witness').row()
+    .text('🚨 Подозреваемый', 'st:suspect').row()
+    .text('⚖️ Обвиняемый', 'st:accused').row()
+    .text('🛡️ Потерпевший', 'st:victim').row()
+    .text('📋 Истец', 'st:plaintiff').row()
+    .text('📋 Ответчик', 'st:defendant');
+  await ctx.reply('*Выберите процессуальный статус:*', { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+// ============ STATUS ============
+bot.callbackQuery(/^st:(witness|suspect|accused|victim|plaintiff|defendant)$/, async (ctx) => {
+  const status = ctx.match[1];
+  const sess = sessions.get(ctx.from.id);
+  if (!sess) return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+  sess.status = status;
+  await ctx.answerCallbackQuery();
+  const kb = new InlineKeyboard()
+    .text('🏪 Кража в магазине', 'sc:theft').row()
+    .text('🚗 ДТП', 'sc:accident').row()
+    .text('💰 Мошенничество', 'sc:fraud').row()
+    .text('🏠 Кража со взломом', 'sc:burglary').row()
+    .text('🧑‍⚖️ Свидетель по чужому делу', 'sc:witness_other').row()
+    .text('📝 Свой инцидент', 'sc:custom');
+  await ctx.reply(`*${STATUS[status]}*\n\n*Выберите сценарий:*`, { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+// ============ SCENARIO ============
+bot.callbackQuery(/^sc:(theft|accident|fraud|burglary|witness_other|custom)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const sess = sessions.get(ctx.from.id);
+  if (!sess) return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+  await ctx.answerCallbackQuery();
+  if (key === 'custom') {
+    await ctx.reply(`*${STATUS[sess.status]}*\n\n*Опишите свой инцидент:*\n\n• Что произошло?\n• Когда?\n• Кто участвовал?\n• Что делали вы?\n\n⚠️ Без личных данных.`);
+    return;
+  }
+  const scenario = SCENARIOS[key];
+  await ctx.reply(`*${scenario.emoji} ${scenario.title}*\n\n${scenario.text}\n\n⏳ Начинаю тренировку...`);
+  await startTraining(ctx, sess, scenario.text);
+});
+
+// ============ START TRAINING ============
+async function startTraining(ctx, sess, incidentText) {
+  sess.incident = incidentText;
+  sess.history = [{ role: 'user', content: 'Инцидент: ' + incidentText }];
+  sess.round = 1;
+  try { await usersCol.updateOne({ userId: ctx.from.id }, { $inc: { sessions: 1 } }); } catch (e) {}
+  const relevant = findRelevantArticles(incidentText, 5);
+  sess.lastLaws = relevant;
+  try {
+    await ctx.replyWithChatAction('typing');
+    const question = await callAI(buildQuestionPrompt(sess.status, sess.incident, 'Инцидент: ' + incidentText, relevant), 500);
+    sess.currentQuestion = question;
+    sess.history.push({ role: 'assistant', content: question });
+    await ctx.reply('⚖️ *Тренажёр запущен.*\n\nКнопки внизу — быстрые действия.', { parse_mode: 'Markdown', reply_markup: mainReplyKeyboard() });
+    await ctx.reply(progressBar(sess), { parse_mode: 'Markdown' });
+    await ctx.reply(question, { parse_mode: 'Markdown', reply_markup: questionInlineKeyboard() });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка ИИ. Попробуйте /start заново.');
+  }
+}
+
+// ============ Reply keyboard ============
+bot.hears('🎓 Завершить', async (ctx) => { await handleFinish(ctx); });
+bot.hears('💡 Подсказка', async (ctx) => { await handleHint(ctx); });
+bot.hears('📊 Итог', async (ctx) => { await handleFinish(ctx); });
+bot.hears('🛡️ Мои права', async (ctx) => {
+  const sess = sessions.get(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  await ctx.reply('🛡️ *Выберите действие:*', { parse_mode: 'Markdown', reply_markup: rightsInlineKeyboard() });
+});
+bot.hears('🔄 Сменить статус', async (ctx) => {
+  const kb = new InlineKeyboard()
+    .text('👤 Свидетель', 'st:witness').row()
+    .text('🚨 Подозреваемый', 'st:suspect').row()
+    .text('⚖️ Обвиняемый', 'st:accused').row()
+    .text('🛡️ Потерпевший', 'st:victim').row()
+    .text('📋 Истец', 'st:plaintiff').row()
+    .text('📋 Ответчик', 'st:defendant');
+  await ctx.reply('*Выберите новый статус:*', { parse_mode: 'Markdown', reply_markup: kb });
+});
 
