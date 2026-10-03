@@ -243,3 +243,4 @@ function buildSummaryPrompt(status, incident, history, laws, stats) {
 💡 Что повторить: • [1] • [2]
 🎯 Рекомендация: [1-2 предложения]`;
 }
+
