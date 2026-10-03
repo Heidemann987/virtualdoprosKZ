@@ -243,4 +243,206 @@ function buildSummaryPrompt(status, incident, history, laws, stats) {
 💡 Что повторить: • [1] • [2]
 🎯 Рекомендация: [1-2 предложения]`;
 }
+// ============ ADMIN FAQ ============
+const ADMIN_FAQ = `
+ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ:
+О БОТЕ:
+• Что это? — Тренажёр допроса для Казахстана.
+• Это консультация юриста? — НЕТ.
+• Язык — только русский.
+• Работает 24/7.
+ОПЛАТА:
+• Сколько стоит? — 100 Stars ИЛИ 2 USDT.
+• Что даёт? — Вечный доступ, без подписок.
+• Бесплатно? — 1 тренировка.
+• Возврат? — НЕТ.
+ФУНКЦИИ:
+• Сценарии: кража, ДТП, мошенничество, взлом, свидетель + свой.
+• Кнопка «🛡️ Мои права» — 8 действий.
+ПРИВАТНОСТЬ:
+• Собираем: Telegram ID и статус оплаты.
+• /privacy — политика.
+• /delete_me — удаление.
+ПОДДЕРЖКА:
+• Время ответа — до 24 часов.
+`;
+
+function buildAdminReplyPrompt(userMessage, username) {
+  return `Ты — администратор бота "Dopros Trainer KZ".
+Пользователь: ${username || 'без username'}
+СООБЩЕНИЕ: "${userMessage}"
+
+${ADMIN_FAQ}
+
+ПРАВИЛА:
+1. Простые вопросы (оплата, функции, ошибки) — отвечай сам, макс 4 предложения.
+2. Сложные (возврат, баг, жалоба, юр. вопрос, реклама) — ответь ТОЛЬКО: «Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.»
+3. Не обещай возврат. Не давай юр. консультаций.
+4. На «вы», вежливо, на русском.
+
+ФОРМАТ:
+CATEGORY: [SIMPLE или COMPLEX]
+REPLY: [текст]
+
+Если COMPLEX — REPLY всегда: «Передал ваш вопрос администратору. Он ответит лично в течение 24 часов.»
+`;
+}
+
+const sessions = new Map();
+
+function mainReplyKeyboard() {
+  return new Keyboard()
+    .text('🎓 Завершить').text('💡 Подсказка').row()
+    .text('🛡️ Мои права').text('📊 Итог').row()
+    .text('💬 Написать админу').text('🔄 Сменить статус').resized().persistent();
+}
+function questionInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('💡 Подсказка', 'hint').row()
+    .text('🤔 Что он имел в виду?', 'meaning').row()
+    .text('🛡️ Мои права', 'rights_menu').row()
+    .text('⏭️ Пропустить', 'skip_question');
+}
+function rightsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('🛡️ Право на молчание', 'act:silence').row()
+    .text('👨‍⚖️ Позвать адвоката', 'act:lawyer').row()
+    .text('⏸️ Попросить перерыв', 'act:break').row()
+    .text('📝 Записать замечание', 'act:note').row()
+    .text('⚠️ Жалоба на давление', 'act:pressure').row()
+    .text('🌐 Требовать переводчика', 'act:translator').row()
+    .text('🚫 Отказаться подписывать', 'act:refuse_sign').row()
+    .text('🔍 Уточнить вопрос', 'act:clarify').row()
+    .text('📞 Жалобы и фиксация', 'complaint_menu');
+}
+function complaintsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📞 Прокурору', 'comp:prosecutor').row()
+    .text('📧 В вышестоящий орган', 'comp:higher').row()
+    .text('📝 Записать в протокол', 'comp:protocol').row()
+    .text('📸 Зафиксировать нарушение', 'comp:document').row()
+    .text('← Назад', 'rights_menu');
+}
+function afterEvalInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Сравнить с эталоном', 'compare_with_standard').row()
+    .text('📚 Показать статьи', 'show_laws');
+}
+function paywallKeyboard() {
+  return new InlineKeyboard()
+    .text(`⭐ Оплатить Stars — ${PRICE_STARS}`, 'pay:stars').row()
+    .text('💼 Как открыть кошелёк', 'wallet:howto').row()
+    .text(`💎 Оплатить через Wallet — ${PRICE_USDT} USDT`, 'pay:usdt').row()
+    .text('🔒 Политика конфиденциальности', 'show_privacy').row()
+    .text('💬 Написать админу', 'contact_admin');
+}
+
+function progressBar(sess) {
+  return `📊 *Раунд ${sess.round}*  ·  ✅ ${sess.correct}  ⚠️ ${sess.warnings}  ❌ ${sess.errors}`;
+}
+
+const bot = new Bot(BOT_TOKEN);
+bot.catch(async (err) => {
+  console.error('Bot error:', err);
+  await logError(err, err.ctx?.from?.id);
+});
+
+async function callAI(prompt, maxTokens, attempt = 1) {
+  let text = '';
+  try {
+    const r = await ai.chat.completions.create({
+      model: MODEL, messages: [{ role: 'user', content: prompt }],
+      temperature: 0.5, max_tokens: maxTokens
+    });
+    text = r.choices[0].message.content || '';
+  } catch (e) {
+    const is429 = e.message && (e.message.includes('429') || e.message.includes('rate') || e.message.includes('quota'));
+    if (is429 && attempt < 3) {
+      const wait = attempt * 15;
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return callAI(prompt, maxTokens, attempt + 1);
+    }
+    throw e;
+  }
+  const wrong = detectLanguage(text) === 'latin' || hasWrongJurisdiction(text);
+  if (wrong) {
+    try {
+      const retry = await ai.chat.completions.create({
+        model: MODEL,
+        messages: [
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: text },
+          { role: 'user', content: 'НЕВЕРНО! Только РУССКИЙ. Только законы КАЗАХСТАНА. Только формат.' }
+        ],
+        temperature: 0.2, max_tokens: maxTokens
+      });
+      const rt = retry.choices[0].message.content || '';
+      if (!hasWrongJurisdiction(rt)) text = rt;
+    } catch (e) {}
+  }
+  return text;
+}
+
+bot.command('start', async (ctx) => {
+  const userId = ctx.from.id;
+  await getUser(userId);
+  const u = await usersCol.findOne({ userId });
+
+  const WELCOME =
+    '⚖️ *Dopros Trainer KZ*\n' +
+    '_AI-тренажёр допроса для Казахстана_\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    'Вы пройдёте реалистичную симуляцию общения со следователем — с разбором каждой ловушки и ссылками на УПК РК.\n\n' +
+    '*Как это работает:*\n' +
+    '1️⃣ Опишете ситуацию или выберете сценарий\n' +
+    '2️⃣ Ответите на вопросы следователя\n' +
+    '3️⃣ После каждого ответа — разбор + эталон\n' +
+    '4️⃣ В конце — оценка и рекомендации\n\n' +
+    '*Что внутри:*\n' +
+    '• 5 сценариев (кража, ДТП, мошенничество, взлом, свидетель)\n' +
+    '• 6 процессуальных статусов\n' +
+    '• 8 процессуальных действий\n' +
+    '• Итоговая оценка\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '🎁 *Первая тренировка — бесплатно*\n' +
+    '🔒 Персональные данные не собираются\n\n' +
+    '⚠️ Это тренажёр, не замена адвоката\n\n' +
+    '*Выберите режим:*';
+
+  if (!u.paid && !u.trialUsed) {
+    sessions.delete(userId);
+    await ctx.reply(WELCOME, {
+      parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam')
+    });
+    return;
+  }
+
+  if (!u.paid && u.trialUsed) {
+    await ctx.reply(
+      '🔒 *Бесплатная тренировка завершена*\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      'Понравилось? Откройте *полный доступ*:\n\n' +
+      '✅ Неограниченные тренировки\n' +
+      '✅ Все сценарии и статусы\n' +
+      '✅ Разбор каждой ловушки\n' +
+      '✅ Итоговая оценка с рекомендациями\n' +
+      '✅ Доступ навсегда, без подписок\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      `💎 Всего *${PRICE_USDT} USDT* ИЛИ *${PRICE_STARS} Stars*`,
+      { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
+    );
+    return;
+  }
+
+  sessions.delete(userId);
+  await ctx.reply(
+    '⚖️ *Dopros Trainer KZ*\n\n' +
+    '✅ *Доступ активен навсегда*\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '*Выберите режим:*',
+    { parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
+  );
+});
 
