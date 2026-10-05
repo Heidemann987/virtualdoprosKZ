@@ -1965,6 +1965,7 @@ process.on('SIGTERM', async () => {
 });
 
 process.on('unhandledRejection', async (reason) => {
+process.on('unhandledRejection', async (reason) => {
   console.error('Unhandled rejection:', reason);
   await logError(reason);
 });
