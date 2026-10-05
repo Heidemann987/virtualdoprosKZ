@@ -565,3 +565,151 @@ bot.command('start', async (ctx) => {
       reply_markup: new InlineKeyboard().text('🎓 Новичок', 'mode:beginner').row().text('📝 Экзамен', 'mode:exam') }
   );
 });
+bot.command('privacy', async (ctx) => {
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот *не собирает* персональные данные:\n• ФИО, ИИН, адрес, телефон\n• Email, карта, паспорт\n\n` +
+    `*Что хранится:*\n• Telegram ID\n• Username (публичный)\n• Статус оплаты и сумма\n• Дата последнего обращения\n\n` +
+    `*Кому передаются:*\n• Telegram — работа бота\n• Crypto Pay — приём USDT\n• AI — только текст сообщений\n\n` +
+    `*Хранение:* до удаления.\n*Удаление:* /delete_me\n\n` +
+    `Используя бота, вы соглашаетесь с политикой.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('delete_me', async (ctx) => {
+  const kb = new InlineKeyboard()
+    .text('❌ Да, удалить', 'confirm_delete').row()
+    .text('← Отмена', 'cancel_delete');
+  await ctx.reply(
+    `⚠️ *Удаление данных*\n\n` +
+    `Будут удалены:\n• Telegram ID\n• Статус оплаты\n• История обращений\n\n` +
+    `⚠️ Платный доступ будет утерян без возврата.\n\nПродолжить?`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+bot.callbackQuery('confirm_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const userId = ctx.from.id;
+  try {
+    await usersCol.deleteOne({ userId });
+    sessions.delete(userId);
+    if (ADMIN_ID) {
+      try { await ctx.api.sendMessage(ADMIN_ID, `🗑 Пользователь удалил данные\n🆔 \`${userId}\``, { parse_mode: 'Markdown' }); } catch (e) {}
+    }
+    await ctx.reply('✅ *Данные удалены*\n\nTelegram ID удалён из базы. Сессия сброшена.', { parse_mode: 'Markdown' });
+  } catch (e) { console.error(e); await ctx.reply('⚠️ Ошибка удаления. Напишите админу.'); }
+});
+
+bot.callbackQuery('cancel_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('❌ Удаление отменено.');
+});
+
+bot.callbackQuery('show_privacy', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот не собирает ФИО, ИИН, адрес, телефон, email, карту.\n\n` +
+    `*Храним:* Telegram ID, статус оплаты, время обращения.\n` +
+    `*Передаём:* Telegram, Crypto Pay, AI (только текст).\n` +
+    `*Удаление:* /delete_me\n\n` +
+    `Подробнее — /privacy.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('help', async (ctx) => {
+  await ctx.reply(
+    '⚖️ *Dopros Trainer KZ*\n\n' +
+    '• /start — начать\n' +
+    '• /reset — сбросить сессию\n' +
+    '• /finish — итог тренировки\n' +
+    '• /privacy — политика конфиденциальности\n' +
+    '• /delete_me — удалить мои данные\n' +
+    '• /help — справка\n\n' +
+    '📚 Статьи: УК РК, УПК РК, Конституция РК.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('admin', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply('⛔ Нет доступа.');
+  const total = await usersCol.countDocuments();
+  const paid = await usersCol.countDocuments({ paid: true });
+  const trial = await usersCol.countDocuments({ trialUsed: true, paid: false });
+  const notStarted = await usersCol.countDocuments({ trialUsed: false, paid: false });
+  const errors = await errorsCol.countDocuments();
+  const unreadMsgs = await messagesCol.countDocuments({ replied: false });
+  const revenue = await paymentsCol.aggregate([
+    { $match: { status: 'paid' } },
+    { $group: { _id: '$method', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+  ]).toArray();
+
+  let revText = '';
+  for (const r of revenue) revText += `• ${r._id}: ${r.count} × ${r.total}\n`;
+
+  const kb = new InlineKeyboard()
+    .text('👥 Пользователи', 'admin:users').row()
+    .text('❌ Ошибки', 'admin:errors').row()
+    .text('💬 Сообщения', 'admin:messages').row()
+    .text('🔄 Обновить', 'admin:refresh');
+
+  await ctx.reply(
+    `🔐 *АДМИН-ПАНЕЛЬ*\n\n` +
+    `👥 Всего: ${total}\n✅ Оплатили: ${paid}\n🎁 Пробных: ${trial}\n⚪ Не начали: ${notStarted}\n\n` +
+    `❌ Ошибок: ${errors}\n💬 Непрочитанных: ${unreadMsgs}\n\n` +
+    `💰 *Доходы:*\n${revText || '(нет)'}`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+bot.callbackQuery('admin:refresh', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  await ctx.deleteMessage();
+  await bot.api.sendMessage(ctx.chat.id, 'Обновлено. Напишите /admin.');
+});
+
+bot.callbackQuery('admin:users', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  const users = await usersCol.find().sort({ createdAt: -1 }).limit(10).toArray();
+  let text = '👥 *Последние 10:*\n\n';
+  for (const u of users) {
+    const status = u.paid ? '✅' : (u.trialUsed ? '🎁' : '⚪');
+    text += `${status} ${u.firstName || '—'} @${u.username || '—'}\n   ID: \`${u.userId}\`\n\n`;
+  }
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+bot.callbackQuery('admin:errors', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  const errs = await errorsCol.find().sort({ createdAt: -1 }).limit(10).toArray();
+  let text = '❌ *Последние 10 ошибок:*\n\n';
+  for (const e of errs) text += `• \`${e.message.slice(0, 100)}\`\n  (${e.createdAt.toISOString().slice(0, 19)})\n\n`;
+  await ctx.reply(text || 'Ошибок нет.', { parse_mode: 'Markdown' });
+});
+
+bot.callbackQuery('admin:messages', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  const msgs = await messagesCol.find({ replied: false }).sort({ createdAt: -1 }).limit(10).toArray();
+  if (!msgs.length) return ctx.reply('Нет новых сообщений.');
+  for (const m of msgs) {
+    const kb = new InlineKeyboard().text('↩️ Ответить', `reply:${m._id}`);
+    await ctx.reply(`💬 *От* \`${m.fromUserId}\`:\n\n${m.text}`, { parse_mode: 'Markdown', reply_markup: kb });
+  }
+});
+
+bot.callbackQuery(/^reply:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  const msgId = ctx.match[1];
+  const msg = await messagesCol.findOne({ _id: new ObjectId(msgId) });
+  if (!msg) return ctx.reply('Не найдено.');
+  sessions.set(ADMIN_ID, { ...(sessions.get(ADMIN_ID) || {}), replyToUserId: msg.fromUserId, replyMsgId: msgId });
+  await ctx.reply(`Напишите ответ для \`${msg.fromUserId}\`. /cancel для отмены.`, { parse_mode: 'Markdown' });
+});
