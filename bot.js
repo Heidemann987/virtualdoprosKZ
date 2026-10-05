@@ -1157,4 +1157,415 @@ bot.callbackQuery('admin:top', async (ctx) => {
     i++;
   }
   await ctx.reply(text, { parse_mode: 'Markdown' });
+});// ═══════════ АДМИН: ОШИБКИ ═══════════
+bot.callbackQuery('admin:errors', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const errs = await errorsCol.find().sort({ createdAt: -1 }).limit(10).toArray();
+  if (!errs.length) return ctx.reply('Ошибок нет ✅');
+
+  let text = '❌ *Последние 10 ошибок:*\n\n';
+  for (const e of errs) {
+    const date = e.createdAt.toISOString().slice(0, 19).replace('T', ' ');
+    text += `• \`${String(e.message).slice(0, 100)}\`\n`;
+    text += `   🆔 ${e.userId || '—'} | 📅 ${date}\n\n`;
+  }
+  const kb = new InlineKeyboard().text('🗑 Очистить', 'admin:errors:clear');
+  await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+bot.callbackQuery('admin:errors:clear', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Очищено' });
+  if (ctx.from.id !== ADMIN_ID) return;
+  await errorsCol.deleteMany({});
+  await ctx.reply('✅ Ошибки очищены.');
+});
+
+// ═══════════ АДМИН: СООБЩЕНИЯ ═══════════
+bot.callbackQuery('admin:messages', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const msgs = await messagesCol.find({ replied: false })
+    .sort({ createdAt: -1 }).limit(10).toArray();
+
+  if (!msgs.length) return ctx.reply('Нет новых сообщений ✅');
+
+  for (const m of msgs) {
+    const u = await usersCol.findOne({ userId: m.fromUserId });
+    const name = u ? `${u.firstName || '—'}${u.username ? ' @' + u.username : ''}` : '';
+    const kb = new InlineKeyboard()
+      .text('↩️ Ответить', `reply:${m._id}`)
+      .text('✅ Прочитано', `admin:msg:read:${m._id}`);
+
+    await ctx.reply(
+      `💬 *От* \`${m.fromUserId}\` ${name}\n📅 ${m.createdAt.toISOString().slice(0, 16).replace('T', ' ')}\n\n${m.text}`,
+      { parse_mode: 'Markdown', reply_markup: kb }
+    );
+  }
+});
+
+bot.callbackQuery(/^admin:msg:read:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Отмечено' });
+  if (ctx.from.id !== ADMIN_ID) return;
+  try {
+    await messagesCol.updateOne(
+      { _id: new ObjectId(ctx.match[1]) },
+      { $set: { replied: true, repliedAt: new Date() } }
+    );
+    await ctx.deleteMessage();
+  } catch (e) { await ctx.reply('⚠️ Ошибка'); }
+});
+
+// ═══════════ АДМИН: ОТВЕТ ПОЛЬЗОВАТЕЛЮ ═══════════
+bot.callbackQuery(/^reply:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  const msgId = ctx.match[1];
+  try {
+    const msg = await messagesCol.findOne({ _id: new ObjectId(msgId) });
+    if (!msg) return ctx.reply('Не найдено.');
+    const s = sessions.get(ADMIN_ID) || {};
+    s.replyToUserId = msg.fromUserId;
+    s.replyMsgId = msgId;
+    sessions.set(ADMIN_ID, s);
+    await ctx.reply(
+      `Напишите ответ для \`${msg.fromUserId}\`. /cancel — отмена.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (e) {
+    await ctx.reply('⚠️ Ошибка: неверный ID.');
+  }
+});
+
+// ═══════════ АДМИН: РАССЫЛКА ═══════════
+bot.callbackQuery('admin:broadcast', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const kb = new InlineKeyboard()
+    .text('👥 Всем', 'admin:broadcast:all').row()
+    .text('✅ Только платным', 'admin:broadcast:paid').row()
+    .text('🎁 Только пробным', 'admin:broadcast:trial').row()
+    .text('← Отмена', 'admin:refresh');
+
+  await ctx.reply('📢 *Кому отправить рассылку?*', {
+    parse_mode: 'Markdown', reply_markup: kb
+  });
+});
+
+bot.callbackQuery(/^admin:broadcast:(all|paid|trial)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const target = ctx.match[1];
+  let query = {};
+  if (target === 'paid') query = { paid: true };
+  else if (target === 'trial') query = { trialUsed: true, paid: false };
+
+  const s = sessions.get(ADMIN_ID) || {};
+  s.broadcastTo = target;
+  s.broadcastQuery = query;
+  sessions.set(ADMIN_ID, s);
+
+  await ctx.reply(
+    `📢 *Рассылка → ${target}*\n\nНапишите текст сообщения.\n❌ /cancel — отмена.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ АДМИН: ВЫДАТЬ ДОСТУП ═══════════
+bot.callbackQuery('admin:grant', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const s = sessions.get(ADMIN_ID) || {};
+  s.awaitingGrant = true;
+  sessions.set(ADMIN_ID, s);
+
+  await ctx.reply(
+    '🎁 *Выдать доступ*\n\nОтправьте Telegram ID пользователя (число).\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ АДМИН: ЗАБАНИТЬ ═══════════
+bot.callbackQuery('admin:ban', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const s = sessions.get(ADMIN_ID) || {};
+  s.awaitingBan = true;
+  sessions.set(ADMIN_ID, s);
+
+  await ctx.reply(
+    '🚫 *Забанить*\n\nОтправьте Telegram ID.\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ АДМИН: ЭКСПОРТ CSV ═══════════
+bot.callbackQuery('admin:export', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const users = await usersCol.find().toArray();
+
+  let csv = 'userId,username,firstName,paid,method,trialUsed,sessions,createdAt,lastSeen\n';
+  for (const u of users) {
+    csv += [
+      u.userId,
+      `"${u.username || ''}"`,
+      `"${(u.firstName || '').replace(/"/g, '""')}"`,
+      u.paid ? 1 : 0,
+      u.paymentMethod || '',
+      u.trialUsed ? 1 : 0,
+      u.sessions || 0,
+      u.createdAt?.toISOString() || '',
+      u.lastSeen?.toISOString() || ''
+    ].join(',') + '\n';
+  }
+
+  const filename = `users_${new Date().toISOString().slice(0, 10)}.csv`;
+  await ctx.replyWithDocument(
+    new InputFile(Buffer.from(csv, 'utf8'), filename),
+    { caption: `📤 Экспорт: ${users.length} пользователей` }
+  );
+});
+
+// ═══════════ ВЫБОР РЕЖИМА ═══════════
+bot.callbackQuery(/^mode:(beginner|exam)$/, async (ctx) => {
+  const mode = ctx.match[1];
+  const userId = ctx.from.id;
+  const u = await usersCol.findOne({ userId });
+
+  if (u?.banned) {
+    await ctx.answerCallbackQuery({ text: '🚫 Вы заблокированы' });
+    return;
+  }
+
+  if (!u.paid && u.trialUsed) {
+    await ctx.answerCallbackQuery({ text: '🔒 Требуется оплата' });
+    return ctx.reply(
+      `🔒 *Бесплатная тренировка завершена*\n\nОткройте полный доступ за *${PRICE_USDT} USDT* или *${PRICE_STARS} Stars*.`,
+      { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
+    );
+  }
+
+  createSession(userId, mode);
+  await ctx.answerCallbackQuery();
+
+  const kb = new InlineKeyboard()
+    .text('👤 Свидетель', 'st:witness').row()
+    .text('🚨 Подозреваемый', 'st:suspect').row()
+    .text('⚖️ Обвиняемый', 'st:accused').row()
+    .text('🛡️ Потерпевший', 'st:victim').row()
+    .text('📋 Истец', 'st:plaintiff').row()
+    .text('📋 Ответчик', 'st:defendant');
+
+  await ctx.reply('*Выберите процессуальный статус:*',
+    { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+// ═══════════ ВЫБОР СТАТУСА ═══════════
+bot.callbackQuery(/^st:(witness|suspect|accused|victim|plaintiff|defendant)$/, async (ctx) => {
+  const status = ctx.match[1];
+  const sess = getSession(ctx.from.id);
+  if (!sess) return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+
+  sess.status = status;
+  await ctx.answerCallbackQuery();
+
+  const kb = new InlineKeyboard()
+    .text('🏪 Кража в магазине', 'sc:theft').row()
+    .text('🚗 ДТП', 'sc:accident').row()
+    .text('💰 Мошенничество', 'sc:fraud').row()
+    .text('🏠 Кража со взломом', 'sc:burglary').row()
+    .text('🧑‍⚖️ Свидетель по чужому делу', 'sc:witness_other').row()
+    .text('💊 Наркотики', 'sc:drugs').row()
+    .text('🪙 Криптовалюта', 'sc:crypto').row()
+    .text('🥊 Побои', 'sc:beating').row()
+    .text('⚠️ Изнасилование', 'sc:rape').row()
+    .text('🏠 Домашнее насилие', 'sc:domestic_violence').row()
+    .text('👊 Драка', 'sc:fight').row()
+    .text('📝 Свой инцидент', 'sc:custom');
+
+  await ctx.reply(`*${STATUS[status]}*\n\n*Выберите сценарий:*`,
+    { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+// ═══════════ ВЫБОР СЦЕНАРИЯ ═══════════
+bot.callbackQuery(
+  /^sc:(theft|accident|fraud|burglary|witness_other|drugs|crypto|beating|rape|domestic_violence|fight|custom)$/,
+  async (ctx) => {
+    const key = ctx.match[1];
+    const sess = getSession(ctx.from.id);
+    if (!sess) return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+    if (!sess.status) return ctx.answerCallbackQuery({ text: 'Выберите статус' });
+
+    await ctx.answerCallbackQuery();
+
+    if (key === 'custom') {
+      sess.awaitingCustomIncident = true;
+      await ctx.reply(
+        `*${STATUS[sess.status]}*\n\n*Опишите свой инцидент:*\n\n• Что произошло?\n• Когда?\n• Кто участвовал?\n• Что делали вы?\n\n⚠️ Без личных данных.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    const scenario = SCENARIOS[key];
+    await ctx.reply(
+      `*${scenario.emoji} ${scenario.title}*\n\n${scenario.text}\n\n⏳ Начинаю тренировку...`,
+      { parse_mode: 'Markdown' }
+    );
+    await startTraining(ctx, sess, scenario.text);
+  }
+);
+
+// ═══════════ REPLY-КНОПКИ ═══════════
+bot.hears('🎓 Завершить', async (ctx) => { await handleFinish(ctx); });
+bot.hears('📊 Итог', async (ctx) => { await handleFinish(ctx); });
+bot.hears('💡 Подсказка', async (ctx) => { await handleHint(ctx); });
+
+bot.hears('🛡️ Мои права', async (ctx) => {
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  await ctx.reply('🛡️ *Выберите действие:*',
+    { parse_mode: 'Markdown', reply_markup: rightsInlineKeyboard() });
+});
+
+bot.hears('🔄 Сменить статус', async (ctx) => {
+  const kb = new InlineKeyboard()
+    .text('👤 Свидетель', 'st:witness').row()
+    .text('🚨 Подозреваемый', 'st:suspect').row()
+    .text('⚖️ Обвиняемый', 'st:accused').row()
+    .text('🛡️ Потерпевший', 'st:victim').row()
+    .text('📋 Истец', 'st:plaintiff').row()
+    .text('📋 Ответчик', 'st:defendant');
+  await ctx.reply('*Выберите новый статус:*',
+    { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+bot.hears('💬 Написать админу', async (ctx) => {
+  const s = sessions.get(ctx.from.id) || {};
+  s.chatWithAdmin = true;
+  sessions.set(ctx.from.id, s);
+  await ctx.reply(
+    '💬 *Чат с администратором*\n\nОпишите вопрос.\n\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ INLINE-КНОПКИ ПОД ВОПРОСОМ ═══════════
+bot.callbackQuery('hint', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleHint(ctx);
+});
+
+bot.callbackQuery('meaning', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleMeaning(ctx);
+});
+
+bot.callbackQuery('skip_question', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) return;
+  sess.round++;
+  await ctx.reply('⏭️ Вопрос пропущен.');
+  await askNextQuestion(ctx, sess);
+});
+
+bot.callbackQuery('show_laws', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.lastLaws?.length) {
+    return ctx.reply('📚 Нет подобранных статей для этого инцидента.');
+  }
+  let text = '📚 *Релевантные статьи:*\n\n';
+  for (const a of sess.lastLaws) {
+    const head = a.code && a.article ? `${a.code}, ${a.article}: ${a.title}` : a.title;
+    text += `*${head}*\n${String(a.text).slice(0, 300)}${a.text.length > 300 ? '…' : ''}\n\n`;
+  }
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+bot.callbackQuery('compare_with_standard', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.lastEvaluation) {
+    return ctx.reply('Нет данных для сравнения.');
+  }
+  await ctx.reply(`📊 *Ваша последняя оценка:*\n\n${sess.lastEvaluation}`,
+    { parse_mode: 'Markdown' });
+});
+
+// ═══════════ ПРАВА: МЕНЮ ═══════════
+bot.callbackQuery('rights_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  try { await ctx.deleteMessage(); } catch (e) {}
+  await ctx.reply('🛡️ *Выберите действие:*',
+    { parse_mode: 'Markdown', reply_markup: rightsInlineKeyboard() });
+});
+
+bot.callbackQuery('complaint_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('📞 *Жалобы и фиксация:*',
+    { parse_mode: 'Markdown', reply_markup: complaintsInlineKeyboard() });
+});
+
+// ═══════════ ПРАВА: ДЕЙСТВИЯ ═══════════
+bot.callbackQuery(
+  /^act:(silence|lawyer|break|note|pressure|translator|refuse_sign|clarify)$/,
+  async (ctx) => {
+    const action = ctx.match[1];
+    const sess = getSession(ctx.from.id);
+    if (!sess || !sess.incident) {
+      return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+    }
+
+    await ctx.answerCallbackQuery({ text: '⏳ Готовлю...' });
+    sess.actionsUsed = (sess.actionsUsed || 0) + 1;
+
+    try {
+      await ctx.replyWithChatAction('typing');
+      const result = await callAI(
+        buildActionPrompt(action, sess.status, sess.incident, sess.currentQuestion),
+        400
+      );
+      await ctx.reply(result, { parse_mode: 'Markdown' });
+    } catch (e) {
+      console.error(e);
+      await logError(e, ctx.from.id);
+      await ctx.reply('⚠️ Ошибка.');
+    }
+  }
+);
+
+// ═══════════ ПРАВА: ЖАЛОБЫ ═══════════
+bot.callbackQuery(/^comp:(prosecutor|higher|protocol|document)$/, async (ctx) => {
+  const type = ctx.match[1];
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) {
+    return ctx.answerCallbackQuery({ text: 'Начните с /start' });
+  }
+
+  await ctx.answerCallbackQuery({ text: '⏳ Готовлю...' });
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const result = await callAI(
+      buildComplaintPrompt(type, sess.status, sess.incident),
+      400
+    );
+    await ctx.reply(result, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка.');
+  }
 });
