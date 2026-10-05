@@ -451,4 +451,710 @@ ${FAQ}
 ФОРМАТ:
 CATEGORY: [SIMPLE или COMPLEX]
 REPLY: [текст]`;
+}// ═══════════ КЛАВИАТУРЫ ═══════════
+function mainReplyKeyboard() {
+  return new Keyboard()
+    .text('🎓 Завершить').text('💡 Подсказка').row()
+    .text('🛡️ Мои права').text('📊 Итог').row()
+    .text('💬 Написать админу').text('🔄 Сменить статус')
+    .resized().persistent();
 }
+
+function questionInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('💡 Подсказка', 'hint').row()
+    .text('🤔 Что он имел в виду?', 'meaning').row()
+    .text('🛡️ Мои права', 'rights_menu').row()
+    .text('⏭️ Пропустить', 'skip_question');
+}
+
+function rightsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('🛡️ Право на молчание', 'act:silence').row()
+    .text('👨‍⚖️ Позвать адвоката', 'act:lawyer').row()
+    .text('⏸️ Попросить перерыв', 'act:break').row()
+    .text('📝 Записать замечание', 'act:note').row()
+    .text('⚠️ Жалоба на давление', 'act:pressure').row()
+    .text('🌐 Требовать переводчика', 'act:translator').row()
+    .text('🚫 Отказаться подписывать', 'act:refuse_sign').row()
+    .text('🔍 Уточнить вопрос', 'act:clarify').row()
+    .text('📞 Жалобы и фиксация', 'complaint_menu');
+}
+
+function complaintsInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📞 Прокурору', 'comp:prosecutor').row()
+    .text('📧 В вышестоящий орган', 'comp:higher').row()
+    .text('📝 Записать в протокол', 'comp:protocol').row()
+    .text('📸 Зафиксировать нарушение', 'comp:document').row()
+    .text('← Назад', 'rights_menu');
+}
+
+function afterEvalInlineKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Сравнить с эталоном', 'compare_with_standard').row()
+    .text('📚 Показать статьи', 'show_laws');
+}
+
+function paywallKeyboard() {
+  return new InlineKeyboard()
+    .text(`⭐ Оплатить Stars — ${PRICE_STARS}`, 'pay:stars').row()
+    .text('💼 Как открыть кошелёк', 'wallet:howto').row()
+    .text(`💎 Оплатить через Wallet — ${PRICE_USDT} USDT`, 'pay:usdt').row()
+    .text('🔒 Политика конфиденциальности', 'show_privacy').row()
+    .text('💬 Написать админу', 'contact_admin');
+}
+
+function progressBar(sess) {
+  return `📊 *Раунд ${sess.round}*  ·  ✅ ${sess.correct}  ⚠️ ${sess.warnings}  ❌ ${sess.errors}`;
+}
+
+// ═══════════ БОТ ═══════════
+const bot = new Bot(BOT_TOKEN);
+const sessions = new Map();
+
+bot.catch(async (err) => {
+  console.error('Bot error:', err);
+  await logError(err, err.ctx?.from?.id);
+});
+
+// ═══════════ AI ═══════════
+async function callAI(prompt, maxTokens, attempt = 1) {
+  let text = '';
+  try {
+    const r = await ai.chat.completions.create({
+      model: MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.5,
+      max_tokens: maxTokens
+    });
+    text = r.choices[0].message.content || '';
+  } catch (e) {
+    const is429 = e.message && (
+      e.message.includes('429') ||
+      e.message.includes('rate') ||
+      e.message.includes('quota')
+    );
+    if (is429 && attempt < 3) {
+      const wait = attempt * 15;
+      console.log(`⏳ Rate limit, ждём ${wait}с...`);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return callAI(prompt, maxTokens, attempt + 1);
+    }
+    throw e;
+  }
+
+  const wrong = detectLanguage(text) === 'latin' || hasWrongJurisdiction(text);
+  if (wrong) {
+    try {
+      const retry = await ai.chat.completions.create({
+        model: MODEL,
+        messages: [
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: text },
+          { role: 'user', content: 'НЕВЕРНО! Только РУССКИЙ. Только законы КАЗАХСТАНА. Только формат.' }
+        ],
+        temperature: 0.2,
+        max_tokens: maxTokens
+      });
+      const rt = retry.choices[0].message.content || '';
+      if (!hasWrongJurisdiction(rt) && detectLanguage(rt) !== 'latin') text = rt;
+    } catch (e) {}
+  }
+  return text;
+}
+
+// ═══════════ СЕССИИ ═══════════
+function getSession(userId) {
+  return sessions.get(userId) || null;
+}
+
+function createSession(userId, mode) {
+  const sess = {
+    mode: mode || 'beginner',
+    status: null,
+    incident: null,
+    history: [],
+    round: 0,
+    correct: 0,
+    warnings: 0,
+    errors: 0,
+    actionsUsed: 0,
+    currentQuestion: null,
+    lastLaws: [],
+    lastEvaluation: null,
+    lastUserAnswer: null,
+    chatWithAdmin: false,
+    replyToUserId: null,
+    replyMsgId: null,
+    awaitingCustomIncident: false
+  };
+  sessions.set(userId, sess);
+  return sess;
+}
+
+// ═══════════ СТАРТ ТРЕНИРОВКИ ═══════════
+async function startTraining(ctx, sess, incidentText) {
+  sess.incident = incidentText;
+  sess.history = [];
+  sess.round = 1;
+  sess.correct = 0;
+  sess.warnings = 0;
+  sess.errors = 0;
+
+  try {
+    await usersCol.updateOne(
+      { userId: ctx.from.id },
+      { $inc: { sessions: 1 } }
+    );
+  } catch (e) {}
+
+  const relevant = await findRelevantArticles(incidentText, 5);
+  sess.lastLaws = relevant;
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const question = await callAI(
+      buildQuestionPrompt(
+        sess.status, sess.incident, sess.history, relevant, sess.round
+      ),
+      500
+    );
+    sess.currentQuestion = question;
+    sess.history.push({ role: 'assistant', content: question });
+
+    await ctx.reply(
+      '⚖️ *Тренажёр запущен.*\n\nКнопки внизу — быстрые действия.',
+      { parse_mode: 'Markdown', reply_markup: mainReplyKeyboard() }
+    );
+    await ctx.reply(progressBar(sess), { parse_mode: 'Markdown' });
+    await ctx.reply(question, {
+      parse_mode: 'Markdown',
+      reply_markup: questionInlineKeyboard()
+    });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка ИИ. Попробуйте /start заново.');
+  }
+}
+
+// ═══════════ СЛЕДУЮЩИЙ ВОПРОС ═══════════
+async function askNextQuestion(ctx, sess) {
+  try {
+    await ctx.replyWithChatAction('typing');
+    const question = await callAI(
+      buildQuestionPrompt(
+        sess.status, sess.incident, sess.history, sess.lastLaws, sess.round
+      ),
+      500
+    );
+    sess.currentQuestion = question;
+    sess.history.push({ role: 'assistant', content: question });
+
+    await ctx.reply(progressBar(sess), { parse_mode: 'Markdown' });
+    await ctx.reply(question, {
+      parse_mode: 'Markdown',
+      reply_markup: questionInlineKeyboard()
+    });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка ИИ. Попробуйте /start.');
+  }
+}
+
+// ═══════════ ОБРАБОТКА ОТВЕТА ═══════════
+async function handleUserAnswer(ctx, sess, answerText) {
+  sess.lastUserAnswer = answerText;
+  sess.history.push({ role: 'user', content: answerText });
+
+  try {
+    await ctx.replyWithChatAction('typing');
+
+    const evaluation = await callAI(
+      buildEvaluationPrompt(
+        sess.status, sess.incident, sess.history, sess.lastLaws
+      ),
+      400
+    );
+    sess.lastEvaluation = evaluation;
+
+    if (evaluation.includes('✅')) sess.correct++;
+    else if (evaluation.includes('❌')) sess.errors++;
+    else sess.warnings++;
+
+    await ctx.reply(evaluation, {
+      parse_mode: 'Markdown',
+      reply_markup: afterEvalInlineKeyboard()
+    });
+
+    const u = await usersCol.findOne({ userId: ctx.from.id });
+    if (u && !u.paid && !u.trialUsed) {
+      await markTrialUsed(ctx.from.id);
+    }
+
+    sess.round++;
+    await askNextQuestion(ctx, sess);
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка обработки. Попробуйте ещё раз.');
+  }
+}
+
+// ═══════════ ПОДСКАЗКА ═══════════
+async function handleHint(ctx) {
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Начните с /start');
+  try {
+    await ctx.replyWithChatAction('typing');
+    const hint = await callAI(
+      buildHintPrompt(
+        sess.status, sess.incident, sess.history, sess.lastLaws
+      ),
+      200
+    );
+    await ctx.reply(hint, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка подсказки.');
+  }
+}
+
+// ═══════════ СМЫСЛ ВОПРОСА ═══════════
+async function handleMeaning(ctx) {
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.currentQuestion) return ctx.reply('Начните с /start');
+  try {
+    await ctx.replyWithChatAction('typing');
+    const meaning = await callAI(
+      buildMeaningPrompt(
+        sess.currentQuestion, sess.incident, sess.lastLaws
+      ),
+      500
+    );
+    await ctx.reply(meaning, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка анализа.');
+  }
+}
+
+// ═══════════ ИТОГ ═══════════
+async function handleFinish(ctx) {
+  const sess = getSession(ctx.from.id);
+  if (!sess || !sess.incident) return ctx.reply('Нет активной тренировки. /start');
+
+  try {
+    await ctx.replyWithChatAction('typing');
+    const stats = {
+      correct: sess.correct,
+      warnings: sess.warnings,
+      errors: sess.errors
+    };
+    const summary = await callAI(
+      buildSummaryPrompt(
+        sess.status, sess.incident, sess.history, sess.lastLaws, stats
+      ),
+      700
+    );
+
+    await ctx.reply(summary, { parse_mode: 'Markdown' });
+    await ctx.reply(
+      '━━━━━━━━━━━━━━━━━━━━\n\n🔄 /start — новая тренировка',
+      { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
+    );
+
+    sess.incident = null;
+    sess.history = [];
+    sess.currentQuestion = null;
+    sess.round = 0;
+  } catch (e) {
+    console.error(e);
+    await logError(e, ctx.from.id);
+    await ctx.reply('⚠️ Ошибка итога.');
+  }// ═══════════ /start ═══════════
+bot.command('start', async (ctx) => {
+  const userId = ctx.from.id;
+  const u = await getUser(userId, ctx.from);
+  sessions.delete(userId);
+
+  if (u.banned) return ctx.reply('🚫 Вы заблокированы.');
+
+  const WELCOME =
+    '⚖️ *Dopros Trainer KZ*\n' +
+    '_AI-тренажёр допроса для Казахстана_\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    'Вы пройдёте реалистичную симуляцию общения со следователем — с разбором каждой ловушки и ссылками на УПК РК.\n\n' +
+    '*Как это работает:*\n' +
+    '1️⃣ Опишете ситуацию или выберете сценарий\n' +
+    '2️⃣ Ответите на вопросы следователя\n' +
+    '3️⃣ После каждого ответа — разбор + эталон\n' +
+    '4️⃣ В конце — оценка и рекомендации\n\n' +
+    '*Что внутри:*\n' +
+    '• 12 сценариев (кража, ДТП, мошенничество, взлом, свидетель, наркотики, крипта, побои, изнасилование, домашнее насилие, драка)\n' +
+    '• 6 процессуальных статусов\n' +
+    '• 8 процессуальных действий\n' +
+    '• Итоговая оценка\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '🎁 *Первая тренировка — бесплатно*\n' +
+    '🔒 Персональные данные не собираются\n\n' +
+    '⚠️ Это тренажёр, не замена адвоката\n\n' +
+    '*Выберите режим:*';
+
+  if (!u.paid && !u.trialUsed) {
+    return ctx.reply(WELCOME, {
+      parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard()
+        .text('🎓 Новичок', 'mode:beginner').row()
+        .text('📝 Экзамен', 'mode:exam')
+    });
+  }
+
+  if (!u.paid && u.trialUsed) {
+    return ctx.reply(
+      '🔒 *Бесплатная тренировка завершена*\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      'Понравилось? Откройте *полный доступ*:\n\n' +
+      '✅ Неограниченные тренировки\n' +
+      '✅ Все сценарии и статусы\n' +
+      '✅ Разбор каждой ловушки\n' +
+      '✅ Итоговая оценка с рекомендациями\n' +
+      '✅ Доступ навсегда, без подписок\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      `💎 Всего *${PRICE_USDT} USDT* ИЛИ *${PRICE_STARS} Stars*`,
+      { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
+    );
+  }
+
+  await ctx.reply(
+    '⚖️ *Dopros Trainer KZ*\n\n' +
+    '✅ *Доступ активен навсегда*\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '*Выберите режим:*',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: new InlineKeyboard()
+        .text('🎓 Новичок', 'mode:beginner').row()
+        .text('📝 Экзамен', 'mode:exam')
+    }
+  );
+});
+
+// ═══════════ /help ═══════════
+bot.command('help', async (ctx) => {
+  await ctx.reply(
+    '⚖️ *Dopros Trainer KZ*\n\n' +
+    '• /start — начать\n' +
+    '• /reset — сбросить сессию\n' +
+    '• /finish — итог тренировки\n' +
+    '• /privacy — политика конфиденциальности\n' +
+    '• /delete_me — удалить мои данные\n' +
+    '• /help — справка\n\n' +
+    '📚 Статьи: УК РК, УПК РК, Конституция РК.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ /reset ═══════════
+bot.command('reset', async (ctx) => {
+  sessions.delete(ctx.from.id);
+  await ctx.reply('🔄 Сессия сброшена. Отправьте /start.', {
+    reply_markup: { remove_keyboard: true }
+  });
+});
+
+// ═══════════ /finish ═══════════
+bot.command('finish', async (ctx) => {
+  await handleFinish(ctx);
+});
+
+// ═══════════ /privacy ═══════════
+bot.command('privacy', async (ctx) => {
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот *не собирает* персональные данные:\n` +
+    `• ФИО, ИИН, адрес, телефон\n` +
+    `• Email, карта, паспорт\n\n` +
+    `*Что хранится:*\n` +
+    `• Telegram ID\n` +
+    `• Username (публичный)\n` +
+    `• Статус оплаты и сумма\n` +
+    `• Дата последнего обращения\n\n` +
+    `*Кому передаются:*\n` +
+    `• Telegram — работа бота\n` +
+    `• Crypto Pay — приём USDT\n` +
+    `• AI — только текст сообщений\n\n` +
+    `*Хранение:* до удаления.\n` +
+    `*Удаление:* /delete_me\n\n` +
+    `Используя бота, вы соглашаетесь с политикой.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ /delete_me ═══════════
+bot.command('delete_me', async (ctx) => {
+  const kb = new InlineKeyboard()
+    .text('❌ Да, удалить', 'confirm_delete').row()
+    .text('← Отмена', 'cancel_delete');
+  await ctx.reply(
+    `⚠️ *Удаление данных*\n\n` +
+    `Будут удалены:\n` +
+    `• Telegram ID\n` +
+    `• Статус оплаты\n` +
+    `• История обращений\n\n` +
+    `⚠️ Платный доступ будет утерян без возврата.\n\n` +
+    `Продолжить?`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+bot.callbackQuery('confirm_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const userId = ctx.from.id;
+  try {
+    await usersCol.deleteOne({ userId });
+    sessions.delete(userId);
+    if (ADMIN_ID) {
+      try {
+        await ctx.api.sendMessage(
+          ADMIN_ID,
+          `🗑 Пользователь удалил данные\n🆔 \`${userId}\``,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (e) {}
+    }
+    await ctx.reply(
+      '✅ *Данные удалены*\n\nTelegram ID удалён из базы.',
+      { parse_mode: 'Markdown' }
+    );
+  } catch (e) {
+    console.error(e);
+    await ctx.reply('⚠️ Ошибка удаления. Напишите админу.');
+  }
+});
+
+bot.callbackQuery('cancel_delete', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('❌ Удаление отменено.');
+});
+
+// ═══════════ /cancel ═══════════
+bot.command('cancel', async (ctx) => {
+  const s = sessions.get(ctx.from.id);
+  if (s) {
+    s.chatWithAdmin = false;
+    s.replyToUserId = null;
+    s.replyMsgId = null;
+    s.awaitingCustomIncident = false;
+  }
+  await ctx.reply('❌ Отменено.');
+});
+
+// ═══════════ /admin ═══════════
+bot.command('admin', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply('⛔ Нет доступа.');
+  await sendAdminPanel(ctx);
+});
+
+bot.callbackQuery('admin:refresh', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+  try { await ctx.deleteMessage(); } catch (e) {}
+  await sendAdminPanel(ctx);
+});
+
+async function sendAdminPanel(ctx) {
+  const total = await usersCol.countDocuments();
+  const paid = await usersCol.countDocuments({ paid: true });
+  const trial = await usersCol.countDocuments({ trialUsed: true, paid: false });
+  const notStarted = await usersCol.countDocuments({ trialUsed: false, paid: false });
+  const errors = await errorsCol.countDocuments();
+  const unreadMsgs = await messagesCol.countDocuments({ replied: false });
+
+  const now = new Date();
+  const day = new Date(now.getTime() - 24 * 3600 * 1000);
+  const week = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  const month = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+
+  const newToday = await usersCol.countDocuments({ createdAt: { $gte: day } });
+  const newWeek = await usersCol.countDocuments({ createdAt: { $gte: week } });
+  const newMonth = await usersCol.countDocuments({ createdAt: { $gte: month } });
+
+  const activeToday = await usersCol.countDocuments({ lastSeen: { $gte: day } });
+  const activeWeek = await usersCol.countDocuments({ lastSeen: { $gte: week } });
+
+  const revStars = await paymentsCol.aggregate([
+    { $match: { status: 'paid', method: 'stars' } },
+    { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$amount' } } }
+  ]).toArray();
+
+  const revUsdt = await paymentsCol.aggregate([
+    { $match: { status: 'paid', method: 'usdt' } },
+    { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$amount' } } }
+  ]).toArray();
+
+  const revStarsToday = await paymentsCol.aggregate([
+    { $match: { status: 'paid', method: 'stars', paidAt: { $gte: day } } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]).toArray();
+
+  const revUsdtToday = await paymentsCol.aggregate([
+    { $match: { status: 'paid', method: 'usdt', paidAt: { $gte: day } } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]).toArray();
+
+  const topScenarios = await usersCol.aggregate([
+    { $match: { sessions: { $gt: 0 } } },
+    { $group: { _id: null, total: { $sum: '$sessions' } } }
+  ]).toArray();
+
+  const conversion = trial + paid > 0
+    ? ((paid / (trial + paid)) * 100).toFixed(1)
+    : '0';
+
+  const sStars = revStars[0]?.total || 0;
+  const sStarsCount = revStars[0]?.count || 0;
+  const sUsdt = revUsdt[0]?.total || 0;
+  const sUsdtCount = revUsdt[0]?.count || 0;
+  const starsToday = revStarsToday[0]?.total || 0;
+  const usdtToday = revUsdtToday[0]?.total || 0;
+  const sessionsTotal = topScenarios[0]?.total || 0;
+
+  const text =
+    `🔐 *АДМИН-ПАНЕЛЬ*\n` +
+    `_${new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' })}_\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👥 *ПОЛЬЗОВАТЕЛИ*\n` +
+    `• Всего: *${total}*\n` +
+    `• ✅ Платных: *${paid}*\n` +
+    `• 🎁 Пробных: *${trial}*\n` +
+    `• ⚪ Не начали: *${notStarted}*\n` +
+    `• 📈 Конверсия: *${conversion}%*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📅 *ДИНАМИКА*\n` +
+    `• Новых сегодня: *${newToday}*\n` +
+    `• Новых за 7 дней: *${newWeek}*\n` +
+    `• Новых за 30 дней: *${newMonth}*\n\n` +
+    `• Активных сегодня: *${activeToday}*\n` +
+    `• Активных за 7 дней: *${activeWeek}*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `💰 *ДОХОДЫ*\n` +
+    `⭐ Stars: *${sStars}* XTR (${sStarsCount} шт)\n` +
+    `💎 USDT: *${sUsdt}* USDT (${sUsdtCount} шт)\n\n` +
+    `📅 За сегодня:\n` +
+    `• ⭐ ${starsToday} XTR\n` +
+    `• 💎 ${usdtToday} USDT\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `🎯 *ТРЕНИРОВКИ*\n` +
+    `• Всего сессий: *${sessionsTotal}*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `❌ Ошибок: *${errors}*\n` +
+    `💬 Непрочитанных: *${unreadMsgs}*\n`;
+
+  const kb = new InlineKeyboard()
+    .text('👥 Пользователи', 'admin:users').row()
+    .text('💰 Платежи', 'admin:payments').row()
+    .text('📊 Топ сценариев', 'admin:top').row()
+    .text('❌ Ошибки', 'admin:errors').row()
+    .text('💬 Сообщения', 'admin:messages').row()
+    .text('📢 Рассылка', 'admin:broadcast').row()
+    .text('🎁 Выдать доступ', 'admin:grant').row()
+    .text('🚫 Забанить', 'admin:ban').row()
+    .text('📤 Экспорт CSV', 'admin:export').row()
+    .text('🔄 Обновить', 'admin:refresh');
+
+  await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: kb });
+}
+
+// ═══════════ АДМИН: ПОЛЬЗОВАТЕЛИ ═══════════
+bot.callbackQuery('admin:users', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const kb = new InlineKeyboard()
+    .text('🆕 Новые', 'admin:users:new').row()
+    .text('✅ Платные', 'admin:users:paid').row()
+    .text('🎁 Пробные', 'admin:users:trial').row()
+    .text('🔥 Активные 24ч', 'admin:users:active').row()
+    .text('← Назад', 'admin:refresh');
+
+  await ctx.reply('👥 *Фильтр пользователей:*', {
+    parse_mode: 'Markdown', reply_markup: kb
+  });
+});
+
+bot.callbackQuery(/^admin:users:(new|paid|trial|active)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const filter = ctx.match[1];
+  let query = {};
+  const day = new Date(Date.now() - 24 * 3600 * 1000);
+
+  if (filter === 'new') query = { createdAt: { $gte: day } };
+  else if (filter === 'paid') query = { paid: true };
+  else if (filter === 'trial') query = { trialUsed: true, paid: false };
+  else if (filter === 'active') query = { lastSeen: { $gte: day } };
+
+  const users = await usersCol.find(query).sort({ lastSeen: -1 }).limit(20).toArray();
+  if (!users.length) return ctx.reply('Нет пользователей.');
+
+  let text = `👥 *${filter.toUpperCase()}* (${users.length}):\n\n`;
+  for (const u of users) {
+    const status = u.paid ? '✅' : (u.trialUsed ? '🎁' : '⚪');
+    const name = `${u.firstName || '—'}${u.username ? ' @' + u.username : ''}`;
+    text += `${status} ${name}\n`;
+    text += `   🆔 \`${u.userId}\`\n`;
+    text += `   🎯 Сессий: ${u.sessions || 0}\n\n`;
+  }
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+// ═══════════ АДМИН: ПЛАТЕЖИ ═══════════
+bot.callbackQuery('admin:payments', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const payments = await paymentsCol.find({ status: 'paid' })
+    .sort({ paidAt: -1 }).limit(15).toArray();
+
+  if (!payments.length) return ctx.reply('Платежей нет.');
+
+  let text = '💰 *Последние 15 платежей:*\n\n';
+  for (const p of payments) {
+    const icon = p.method === 'stars' ? '⭐' : '💎';
+    const date = (p.paidAt || p.createdAt)?.toISOString().slice(0, 16).replace('T', ' ') || '—';
+    text += `${icon} \`${p.userId}\` — ${p.amount} ${p.method === 'stars' ? 'XTR' : 'USDT'}\n`;
+    text += `   📅 ${date}\n\n`;
+  }
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+// ═══════════ АДМИН: ТОП ═══════════
+bot.callbackQuery('admin:top', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.from.id !== ADMIN_ID) return;
+
+  const top = await usersCol.aggregate([
+    { $match: { sessions: { $gt: 0 } } },
+    { $group: { _id: '$userId', sessions: { $sum: '$sessions' } } },
+    { $sort: { sessions: -1 } },
+    { $limit: 10 }
+  ]).toArray();
+
+  if (!top.length) return ctx.reply('Нет данных.');
+
+  let text = '📊 *Топ-10 по сессиям:*\n\n';
+  let i = 1;
+  for (const t of top) {
+    const u = await usersCol.findOne({ userId: t._id });
+    const name = u ? `${u.firstName || '—'}${u.username ? ' @' + u.username : ''}` : '—';
+    text += `${i}. ${name}\n   🎯 ${t.sessions} | \`${t._id}\`\n\n`;
+    i++;
+  }
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
