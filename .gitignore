@@ -1,0 +1,58 @@
+# ═══════════ ЗАВИСИМОСТИ ═══════════
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ═══════════ СЕКРЕТЫ (КРИТИЧНО!) ═══════════
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.pem
+*.key
+
+# ═══════════ RAG КЭШ ═══════════
+.rag-cache.json
+.rag-cache-*.json
+scripts/.cache/
+
+# ═══════════ ЛОГИ ═══════════
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pm2.log
+
+# ═══════════ СИСТЕМНЫЕ ═══════════
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ═══════════ IDE ═══════════
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ═══════════ ВРЕМЕННЫЕ ═══════════
+tmp/
+temp/
+*.tmp
+*.bak
+.cache/
+
+# ═══════════ ЭКСПОРТЫ АДМИНА ═══════════
+users_*.csv
+export_*.csv
+export_*.json
+
+# ═══════════ DOCKER ═══════════
+.dockerignore
