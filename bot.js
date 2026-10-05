@@ -1729,4 +1729,244 @@ bot.callbackQuery('contact_admin', async (ctx) => {
     '💬 *Чат с администратором*\n\nОпишите вопрос. Простые обработает AI, сложные — передадутся админу.\n\n❌ /cancel — отмена.',
     { parse_mode: 'Markdown' }
   );
+});// ═══════════ ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ═══════════
+bot.on('message:text', async (ctx) => {
+  const userId = ctx.from.id;
+  const text = ctx.message.text.trim();
+  const sess = getSession(userId);
+
+  // Игнорируем команды
+  if (text.startsWith('/')) return;
+
+  // ═══ АДМИН-ВВОД ═══
+  if (userId === ADMIN_ID) {
+    const s = sessions.get(ADMIN_ID);
+
+    // Рассылка
+    if (s?.broadcastTo) {
+      const query = s.broadcastQuery || {};
+      s.broadcastTo = null;
+      s.broadcastQuery = null;
+      sessions.set(ADMIN_ID, s);
+
+      const users = await usersCol.find(query).toArray();
+      await ctx.reply(`📢 Начинаю рассылку для ${users.length} чел...`);
+
+      let ok = 0, fail = 0;
+      for (const u of users) {
+        try {
+          await bot.api.sendMessage(u.userId, text, { parse_mode: 'Markdown' });
+          ok++;
+        } catch (e) { fail++; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await ctx.reply(`✅ Отправлено: ${ok}\n❌ Ошибок: ${fail}`);
+      return;
+    }
+
+    // Выдать доступ
+    if (s?.awaitingGrant) {
+      s.awaitingGrant = false;
+      sessions.set(ADMIN_ID, s);
+      const targetId = parseInt(text);
+      if (!targetId) return ctx.reply('⚠️ Неверный ID.');
+      await usersCol.updateOne(
+        { userId: targetId },
+        { $set: { paid: true, paidAt: new Date(), paymentMethod: 'manual' } }
+      );
+      await ctx.reply(`✅ Доступ выдан \`${targetId}\``, { parse_mode: 'Markdown' });
+      try {
+        await bot.api.sendMessage(targetId,
+          '🎁 *Вам выдан полный доступ!*\n\nОтправьте /start.',
+          { parse_mode: 'Markdown' });
+      } catch (e) {}
+      return;
+    }
+
+    // Забанить
+    if (s?.awaitingBan) {
+      s.awaitingBan = false;
+      sessions.set(ADMIN_ID, s);
+      const targetId = parseInt(text);
+      if (!targetId) return ctx.reply('⚠️ Неверный ID.');
+      await usersCol.updateOne({ userId: targetId }, { $set: { banned: true } });
+      await ctx.reply(`🚫 Забанен \`${targetId}\``, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // Ответ пользователю
+    if (s?.replyToUserId) {
+      try {
+        await bot.api.sendMessage(
+          s.replyToUserId,
+          `📩 *Ответ от администратора:*\n\n${text}`,
+          { parse_mode: 'Markdown' }
+        );
+        await ctx.reply(
+          `✅ Отправлено пользователю \`${s.replyToUserId}\``,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (e) {
+        await ctx.reply(`⚠️ Не удалось: ${e.message}`);
+      }
+      s.replyToUserId = null;
+      s.replyMsgId = null;
+      return;
+    }
+  }
+
+  // ═══ ПОЛЬЗОВАТЕЛЬ ПИШЕТ АДМИНУ ═══
+  if (sess?.chatWithAdmin) {
+    try {
+      await ctx.replyWithChatAction('typing');
+      const raw = await callAI(
+        buildAdminReplyPrompt(text, ctx.from.username),
+        300
+      );
+      const catMatch = raw.match(/CATEGORY:\s*(SIMPLE|COMPLEX)/i);
+      const repMatch = raw.match(/REPLY:\s*([\s\S]+)/i);
+      const category = catMatch ? catMatch[1].toUpperCase() : 'COMPLEX';
+      const reply = repMatch ? repMatch[1].trim() : raw.trim();
+
+      await ctx.reply(reply, { parse_mode: 'Markdown' });
+
+      if (category === 'COMPLEX') {
+        const msgId = await saveMessage(userId, text);
+        if (ADMIN_ID) {
+          try {
+            const kb = new InlineKeyboard().text('↩️ Ответить', `reply:${msgId}`);
+            await bot.api.sendMessage(
+              ADMIN_ID,
+              `💬 *Новое сообщение*\n👤 ${ctx.from.first_name || ''} @${ctx.from.username || '—'}\n🆔 \`${userId}\`\n\n${text}`,
+              { parse_mode: 'Markdown', reply_markup: kb }
+            );
+          } catch (e) {}
+        }
+      }
+      sess.chatWithAdmin = false;
+    } catch (e) {
+      console.error(e);
+      await logError(e, userId);
+      await ctx.reply('⚠️ Ошибка. Напишите позже.');
+    }
+    return;
+  }
+
+  // ═══ КАСТОМНЫЙ ИНЦИДЕНТ ═══
+  if (sess?.awaitingCustomIncident) {
+    sess.awaitingCustomIncident = false;
+    if (text.length < 20) {
+      return ctx.reply('⚠️ Слишком коротко. Опишите подробнее (минимум 20 символов).');
+    }
+    await ctx.reply('📝 Инцидент принят. Начинаю...');
+    await startTraining(ctx, sess, text);
+    return;
+  }
+
+  // ═══ ОТВЕТ В ТРЕНИРОВКЕ ═══
+  if (sess?.incident && sess.currentQuestion) {
+    const u = await usersCol.findOne({ userId });
+    if (u?.banned) return ctx.reply('🚫 Вы заблокированы.');
+    if (!u.paid && u.trialUsed) {
+      return ctx.reply(
+        `🔒 *Тренировка завершена*\n\nОткройте полный доступ за *${PRICE_USDT} USDT* или *${PRICE_STARS} Stars*.`,
+        { parse_mode: 'Markdown', reply_markup: paywallKeyboard() }
+      );
+    }
+    await handleUserAnswer(ctx, sess, text);
+    return;
+  }
+
+  // ═══ ВСЁ ОСТАЛЬНОЕ ═══
+  await ctx.reply('Начните тренировку командой /start.');
 });
+
+// ═══════════ EXPRESS ═══════════
+const app = express();
+app.use(express.json());
+
+app.get('/', (req, res) => res.send('Dopros Trainer KZ bot is running ✅'));
+app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
+// CryptoPay webhook
+app.post('/cryptopay/webhook', async (req, res) => {
+  res.sendStatus(200);
+  try {
+    const update = req.body;
+    if (update?.update_type === 'invoice_paid') {
+      const payload = JSON.parse(update.payload?.payload || '{}');
+      const userId = payload.userId;
+      if (userId) {
+        await setUserPaid(userId, 'usdt');
+        await paymentsCol.updateOne(
+          { invoiceId: update.payload.invoice_id },
+          { $set: { status: 'paid', paidAt: new Date() } }
+        );
+        try {
+          await bot.api.sendMessage(
+            userId,
+            '✅ *Оплата получена!*\n\nДоступ активирован навсегда. Отправьте /start.',
+            { parse_mode: 'Markdown' }
+          );
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    console.error('webhook:', e.message);
+  }
+});
+
+// ═══════════ ЗАПУСК ═══════════
+async function main() {
+  try {
+    await connectDB();
+    await initRAG();
+
+    if (WEBHOOK_URL) {
+      const path = `/webhook/${WEBHOOK_SECRET}`;
+
+      app.post(path, (req, res) => {
+        bot.handleUpdate(req.body, res);
+      });
+
+      app.listen(PORT, async () => {
+        console.log(`🌐 HTTP server on port ${PORT}`);
+        try {
+          await bot.api.setWebhook(`${WEBHOOK_URL}${path}`, {
+            drop_pending_updates: true,
+            allowed_updates: ['message', 'callback_query']
+          });
+          console.log(`✅ Webhook set: ${WEBHOOK_URL}${path}`);
+        } catch (e) {
+          console.error('❌ setWebhook failed:', e.message);
+          console.log('→ Падаю в polling...');
+          await bot.start();
+        }
+      });
+    } else {
+      console.log('⚠️ WEBHOOK_URL не задан — polling');
+      app.listen(PORT, () => console.log(`🌐 HTTP server on port ${PORT}`));
+      await bot.start({
+        onStart: (info) => console.log(`✅ Bot @${info.username} started (polling)`)
+      });
+    }
+  } catch (e) {
+    console.error('❌ Fatal:', e);
+    await logError(e);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, stopping...');
+  try { await bot.stop(); } catch (e) {}
+  process.exit(0);
+});
+
+process.on('unhandledRejection', async (reason) => {
+  console.error('Unhandled rejection:', reason);
+  await logError(reason);
+});
+
+main();
