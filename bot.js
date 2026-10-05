@@ -1568,4 +1568,165 @@ bot.callbackQuery(/^comp:(prosecutor|higher|protocol|document)$/, async (ctx) =>
     await logError(e, ctx.from.id);
     await ctx.reply('⚠️ Ошибка.');
   }
+});// ═══════════ ОПЛАТА STARS ═══════════
+bot.callbackQuery('pay:stars', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCallbackQuery();
+  try {
+    await ctx.replyWithInvoice(
+      'Dopros Trainer KZ — Lifetime Access',
+      'Вечный доступ. Без подписок.',
+      `stars_${userId}_${Date.now()}`,
+      'XTR',
+      [{ label: 'Lifetime Access', amount: PRICE_STARS }],
+      { provider_token: '' }
+    );
+  } catch (e) {
+    console.error(e);
+    await logError(e, userId);
+    await ctx.reply('⚠️ Ошибка создания счёта.');
+  }
+});
+
+// ═══════════ ОПЛАТА USDT ═══════════
+bot.callbackQuery('pay:usdt', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCallbackQuery();
+  if (!CRYPTO_PAY_TOKEN) {
+    return ctx.reply('⚠️ USDT временно недоступен. Используйте Stars.');
+  }
+  await ctx.reply('💎 Готовлю счёт...');
+  try {
+    const inv = await createUsdtInvoice(userId);
+    await paymentsCol.insertOne({
+      userId, method: 'usdt', amount: PRICE_USDT,
+      invoiceId: inv.invoice_id, status: 'pending',
+      createdAt: new Date()
+    });
+    const kb = new InlineKeyboard().url('💎 Оплатить USDT', inv.bot_invoice_url);
+    await ctx.reply(
+      `💎 *Счёт на ${PRICE_USDT} USDT*\n\nНажмите кнопку ниже.`,
+      { parse_mode: 'Markdown', reply_markup: kb }
+    );
+    checkUsdtPayment(ctx, userId, inv.invoice_id, 30);
+  } catch (e) {
+    console.error(e);
+    await logError(e, userId);
+    await ctx.reply('⚠️ Ошибка счёта.');
+  }
+});
+
+async function checkUsdtPayment(ctx, userId, invoiceId, attempts) {
+  if (attempts <= 0) return;
+  await new Promise(r => setTimeout(r, 10000));
+  try {
+    const res = await fetch(
+      `${CRYPTO_PAY_API}/getInvoices?invoice_ids=${invoiceId}`,
+      { headers: { 'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN } }
+    );
+    const data = await res.json();
+    const inv = data.result?.items?.[0];
+    if (inv && inv.status === 'paid') {
+      await setUserPaid(userId, 'usdt');
+      await paymentsCol.updateOne(
+        { invoiceId },
+        { $set: { status: 'paid', paidAt: new Date() } }
+      );
+      try {
+        await ctx.api.sendMessage(userId,
+          '✅ *Оплата получена!*\n\nОтправьте /start.',
+          { parse_mode: 'Markdown' });
+      } catch (e) {}
+      if (ADMIN_ID) {
+        try {
+          await ctx.api.sendMessage(ADMIN_ID,
+            `💰 *Оплата USDT*\n🆔 \`${userId}\`\n💎 ${PRICE_USDT} USDT`,
+            { parse_mode: 'Markdown' });
+        } catch (e) {}
+      }
+      return;
+    }
+    checkUsdtPayment(ctx, userId, invoiceId, attempts - 1);
+  } catch (e) {
+    console.error('checkUsdtPayment:', e.message);
+    checkUsdtPayment(ctx, userId, invoiceId, attempts - 1);
+  }
+}
+
+// ═══════════ STARS SUCCESS ═══════════
+bot.on('message:successful_payment', async (ctx) => {
+  const userId = ctx.from.id;
+  const p = ctx.message.successful_payment;
+  await setUserPaid(userId, 'stars');
+  await paymentsCol.insertOne({
+    userId, method: 'stars', amount: p.total_amount,
+    currency: 'XTR', telegramChargeId: p.telegram_payment_charge_id,
+    status: 'paid', createdAt: new Date()
+  });
+  if (ADMIN_ID) {
+    try {
+      await ctx.api.sendMessage(ADMIN_ID,
+        `💰 *Stars*\n👤 ${ctx.from.first_name || ''} @${ctx.from.username || '—'}\n🆔 \`${userId}\`\n⭐ ${p.total_amount} XTR`,
+        { parse_mode: 'Markdown' });
+    } catch (e) {}
+  }
+  await ctx.reply('✅ *Оплата получена!*\n\nОтправьте /start.',
+    { parse_mode: 'Markdown' });
+});
+
+// ═══════════ WALLET: ИНСТРУКЦИЯ ═══════════
+bot.callbackQuery('wallet:howto', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const instruction =
+    `💼 *Как оплатить через Telegram Wallet*\n\n` +
+    `*ЧАСТЬ 1. КОШЕЛЁК*\n\n` +
+    `*Шаг 1.* В поиске Telegram введите *@wallet*.\nВыберите бота с *синей галочкой ✓*.\n\n` +
+    `*Шаг 2.* Нажмите *Start* → *Open Wallet*.\n\n` +
+    `*Шаг 3.* Установите *PIN-код* (4–6 цифр).\n\n` +
+    `*ЧАСТЬ 2. ПОПОЛНЕНИЕ*\n\n` +
+    `*Шаг 4.* Нажмите *«+»* → *Add Crypto*.\n\n` +
+    `Способы:\n• *P2P Express* — покупка с карты.\n• *Bank Card* — прямая покупка.\n• *Transfer* — с биржи.\n\n` +
+    `*ЧАСТЬ 3. ОПЛАТА*\n\n` +
+    `*Шаг 5.* Минимум *3 USDT* в кошельке.\n\n` +
+    `*Шаг 6.* Вернитесь → *«💎 Оплатить через Wallet»*.\n\n` +
+    `*Шаг 7.* Сеть *TRC20* или *TON*.\n\n` +
+    `*Шаг 8.* Подтвердите → доступ активируется.\n\n` +
+    `⚠️ Комиссия сети 0.5–1 USDT.\nВозврат НЕ производится.`;
+  const kb = new InlineKeyboard()
+    .text('🚀 Открыть @wallet', 'open_wallet').row()
+    .text('💎 Оплатить через Wallet', 'pay:usdt').row()
+    .text('💬 Написать админу', 'contact_admin');
+  await ctx.reply(instruction, { parse_mode: 'Markdown', reply_markup: kb });
+});
+
+bot.callbackQuery('open_wallet', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Ищите @wallet в Telegram' });
+  await ctx.reply(
+    '🚀 *Откройте @wallet:*\n\n👉 [Открыть @wallet](https://t.me/wallet)\n\nПосле — *💎 Оплатить через Wallet*.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.callbackQuery('show_privacy', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    `🔒 *Политика конфиденциальности*\n\n` +
+    `Бот не собирает ФИО, ИИН, адрес, телефон, email, карту.\n\n` +
+    `*Храним:* Telegram ID, статус оплаты, время обращения.\n` +
+    `*Передаём:* Telegram, Crypto Pay, AI (только текст).\n` +
+    `*Удаление:* /delete_me\n\nПодробнее — /privacy.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ═══════════ ЧАТ С АДМИНОМ ═══════════
+bot.callbackQuery('contact_admin', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const s = sessions.get(ctx.from.id) || {};
+  s.chatWithAdmin = true;
+  sessions.set(ctx.from.id, s);
+  await ctx.reply(
+    '💬 *Чат с администратором*\n\nОпишите вопрос. Простые обработает AI, сложные — передадутся админу.\n\n❌ /cancel — отмена.',
+    { parse_mode: 'Markdown' }
+  );
 });
